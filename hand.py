@@ -1,6 +1,6 @@
 import random
 from textwrap import dedent
-from typing import Callable, List, Tuple
+from typing import Callable, List, Tuple, Type, Union
 
 import einops
 import matplotlib.pyplot as plt
@@ -11,6 +11,9 @@ from typeguard import typechecked
 
 patch_typeguard()
 
+# ------------------------- #
+# Reimplementation of GPT-2 #
+# ------------------------- #
 
 class CharTokenizer:
 
@@ -54,7 +57,7 @@ class CharTokenizer:
         ]
 
 
-class PositionEncoder(torch.nn.Module):
+class PositionEncoder(torch.nn.Module):  # Not used
     """A positional encoder that adds (co)sinusoidal frequencies to the input."""
 
     @typechecked
@@ -78,8 +81,11 @@ class PositionEncoder(torch.nn.Module):
 
 class AttentionHead(torch.nn.Module):
 
-    def __init__(self, embedding_size: int, out_size: int) -> None:
+    def __init__(self, embedding_size: int, out_size: int, layer:int=None, n:int=None) -> None:
         super().__init__()
+
+        self.layer = layer
+        self.n = n
 
         self.queries = torch.nn.Parameter(torch.randn(embedding_size, out_size))
         self.keys = torch.nn.Parameter(torch.randn(embedding_size, out_size))
@@ -94,29 +100,41 @@ class AttentionHead(torch.nn.Module):
         k = torch.einsum("bte,ei->bti", x, self.keys)
         v = torch.einsum("bte,ei->bti", x, self.values)
 
+        debug(q, self.layer, self.n, 'q')
+        debug(k, self.layer, self.n, 'k')
+        debug(v, self.layer, self.n, 'v')
+
         qk = torch.einsum("bti,bTi->btT", q, k)
         s = torch.softmax(qk / q.shape[-1]**0.5, dim=-1)
         out = torch.einsum("btT,bTi->bti", s, v)
+
+        debug(qk, self.layer, self.n, 'fit')
+        debug(s, self.layer, self.n, 'attention')
+        debug(out, self.layer, self.n, 'head')
 
         return out
 
 
 class MultiAttentionHead(torch.nn.Module):
 
-    def __init__(self, embedding_size: int, heads: int) -> None:
+    def __init__(self, embedding_size: int, heads: int, layer:int=None) -> None:
         assert embedding_size % heads == 0, "embedding size must be divisible by heads."
         super().__init__()
+        self.layer = layer
 
         out_size = embedding_size // heads
 
         self.heads = torch.nn.ModuleList(
-            [AttentionHead(embedding_size, out_size) for _ in range(heads)])
+            [AttentionHead(embedding_size, out_size, layer=layer, n=n) for n in range(heads)])
         self.weight = torch.nn.Linear(embedding_size, embedding_size, bias=False)
 
     def forward(self, x: TensorType['b', 't',
                                     'emb']) -> TensorType['b', 't', 'out']:
         combined = torch.cat([head(x) for head in self.heads], dim=-1)
-        return x + self.weight(combined)
+        debug(combined, self.layer, "heads-combined")
+        output = x + self.weight(combined)
+        debug(output, self.layer, "multihead")
+        return output
 
 
 class AttentionOnlyTransformer(torch.nn.Module):
@@ -132,7 +150,7 @@ class AttentionOnlyTransformer(torch.nn.Module):
         # self.position_encoder = PositionEncoder()
         self.position_encoder = pos_encoder
         self.blocks = torch.nn.Sequential(
-            *[MultiAttentionHead(embedding_size, heads) for _ in range(depth)])
+            *[MultiAttentionHead(embedding_size, heads, layer=layer) for layer in range(depth)])
         self.unembedding = torch.nn.Parameter(torch.rand(embedding_size, voc_size))
 
     def forward(self, x: TensorType['batch', 'token']) -> List[str]:
@@ -145,6 +163,10 @@ class AttentionOnlyTransformer(torch.nn.Module):
         probas = torch.softmax(unembeded, dim=-1)
         return probas
 
+
+# ----------------------- #
+# Framework for exercises #
+# ----------------------- #
 
 class Exercise:
 
@@ -295,33 +317,40 @@ Examples:
 
         return template
 
-class SaveOutputs:
-    """Hook to save outputs that removes itself after one use."""
-    def __init__(self, name=""):
-        self.name = name
-        self.outputs = []
 
-    def hook(self, module, inputs, outputs):
-        print(self.name, module, "ouptuts:")
-        print(outputs)
-        self.outputs.append(outputs)
+# ------------------------------ #
+# Help for visualizing the model #
+# ------------------------------ #
 
-    def add_to(self, module: torch.nn.Module):
+DEBUG = set(("",))  # debug everythin
 
-        def _hook(module, inputs, outputs):
-            try:
-                self.hook(module, inputs, outputs)
-            finally:
-                handle.remove()
+def set_debug(*args: Union[str, List[Union[str, int, type(...)]]]) -> None:
+    """Print matrices whose name correspond to the pattern
 
-        handle = module.register_forward_hook(_hook)
+    Examples:
+        set_debug() will print nothing.
+        set_debug(()) will print everthing possible.
+        set_debug(1) will print everything happening the first layer.
+        set_debug([1, 2, "head"]) will print the output of the second head of the first layer.
+        set_debug([1, ..., "q"]) will print all queries of the first layer.
+        set_debug([..., ..., "q"], [..., ..., "k"]) will print all queries and keys of all layers.
+    """
+    args = [a if isinstance(a, tuple) else (a,) for a in args]
+    DEBUG.clear()
+    DEBUG.update(args)
 
-    def add_to_all(self, modules: list, type=None):
-        for module in modules:
-            if not type or isinstance(module, type):
-                self.add_to(module)
+def debug(value: TensorType, *name: Union[str, int]) -> None:
+    for pattern in DEBUG:
+        # print('eval', pattern, name)
+        for part, pat in zip(name, pattern):
+            if pat is not ... and part != pat:
+                break  # not a match, next pattern
+        else:
+            # We have found a pattern that matches
+            print(*name)
+            print(value)
+            return
 
-        return self
 
 def mkexo(name: str, voc: str, input_len: int) -> Exercise:
 

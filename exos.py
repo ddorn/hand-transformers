@@ -1,11 +1,12 @@
 import random
 from typing import List
 from torch import Tensor
-from hand import Exercise, SaveOutputs, mkexo
+from hand import Exercise, mkexo, set_debug
 
 __all__ = [
     'exo0', 'exo1', 'exo2', 'exo3', 'exo4', 'exo5', 'exo6', 'exo7', 'exo8',
-    'exo9', 'exo10', 'EXOS'
+    'exo9', 'exo10', 'EXOS',
+    'set_debug'
 ]
 
 @mkexo(name="00-LastChar", voc="abc", input_len=3)
@@ -202,12 +203,14 @@ def sol1():
 
     layers = [layer_0]
 
+    set_debug(())
 
     model = EXOS[1].mk_model(1, 2, 3, embedding, unembedding, pos_encoder, layers)
-    EXOS[1].test(model, nb_tests=100)
+    import torch
+    model(torch.tensor([[0, 1, 2]]))
+    # EXOS[1].test(model, nb_tests=100)
 
 
 if __name__ == '__main__':
     # print(EXOS[1].print_template(1, 2, 6 // 2, default="0"))
-    sol0()
     sol1()
