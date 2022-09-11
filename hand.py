@@ -35,15 +35,15 @@ class CharTokenizer:
         self.vocab_size = len(self.vocab)
 
     @typechecked
-    def encode(self, prompts: List[str]) -> TensorType['batch', 'max_len']:
+    def encode(self,
+               prompts: List[str],
+               pad: bool = True) -> TensorType['batch', 'max_len']:
         if any(len(prompt) > self.max_len for prompt in prompts):
-            print(
-                "Warning: some prompts are longer than max_len, they will be truncated."
-            )
+            print("Warning: prompts longer than max_len will be truncated.")
 
         prompts = [prompt[-self.max_len:] for prompt in prompts]
 
-        return torch.tensor([[0] * (self.max_len - len(prompt)) +
+        return torch.tensor([[0] * pad * (self.max_len - len(prompt)) +
                              [self.vocab.index(char) for char in prompt]
                              for prompt in prompts])
 
@@ -186,41 +186,57 @@ Examples:
     def vocab_size(self) -> int:
         return self.tokenizer.vocab_size
 
+    def generate(self, n: int) -> Tuple[List[str], List[str]]:
+        """Generate n inputs and expected outputs."""
+        xs, ys = zip(*[self.generator() for _ in range(n)])
+        return list(xs), list(ys)
+
     @typechecked
-    def test_model(
-            self,
-            depth: int,
-            heads: int,
-            inner_size: int,
-            embedding: TensorType['voc', 'embedding_size'],
-            unembedding: TensorType['embedding_size', 'voc'],
-            position_encoder: TensorType['max_len', 'embedding_size'],
-            layers: List[Tuple[List[Tuple[TensorType['token', 'inner'],  # Q
-                                          TensorType['token', 'inner'],  # K
-                                          TensorType['token', 'inner'],  # V
-                                          ],  # per head
-                                    ], TensorType['embedding',
-                                                  'embedding'],  # W per layer
-                               # Feed forward ? norm ?
-                               ]],
-            nb_tests: int = 1000) -> Tuple[float, float]:
+    def mk_model(
+        self,
+        depth: int,
+        heads: int,
+        inner_size: int,
+        embedding: TensorType['voc', 'embedding_size'],
+        unembedding: TensorType['embedding_size', 'voc'],
+        position_encoder: TensorType['max_len', 'embedding_size'],
+        layers: List[Tuple[List[Tuple[TensorType['token', 'inner'],  # Q
+                                      TensorType['token', 'inner'],  # K
+                                      TensorType['token', 'inner'],  # V
+                                      ],  # per head
+                                ], TensorType['embedding',
+                                              'embedding'],  # W per layer
+                           # Feed forward ? norm ?
+                           ]],
+    ) -> AttentionOnlyTransformer:
+
+        # Shorthand
+        p = lambda x: torch.nn.Parameter(x, requires_grad=False)
 
         model = AttentionOnlyTransformer(self.tokenizer.vocab_size,
                                          inner_size * heads, depth, heads, position_encoder)
-        model.embedding.weight = torch.nn.Parameter(embedding)
-        model.unembedding = torch.nn.Parameter(unembedding)
+        model.embedding.weight = p(embedding)
+        model.unembedding = p(unembedding)
 
         for i, (heads, weight) in enumerate(layers):
             for j, (q, k, v) in enumerate(heads):
-                model.blocks[i].heads[j].queries = torch.nn.Parameter(q)
-                model.blocks[i].heads[j].keys = torch.nn.Parameter(k)
-                model.blocks[i].heads[j].values = torch.nn.Parameter(v)
-            model.blocks[i].weight.weight = torch.nn.Parameter(weight)
+                model.blocks[i].heads[j].queries = p(q)
+                model.blocks[i].heads[j].keys = p(k)
+                model.blocks[i].heads[j].values = p(v)
+            model.blocks[i].weight.weight = p(weight)
 
-        xs, ys = zip(*[self.generator() for _ in range(nb_tests)])
-        xs_enc = self.tokenizer.encode(list(xs))
-        ys_enc = self.tokenizer.encode(list(ys))[:, -1]
+        return model
 
+    @typechecked
+    def test(self,
+             model: torch.nn.Module,
+             nb_tests: int = 100) -> Tuple[float, float]:
+
+        xs, ys = self.generate(nb_tests)
+        xs_enc = self.tokenizer.encode(xs)
+        ys_enc = self.tokenizer.encode(ys, pad=False)[:, -1]
+
+        # Count successes and compute loss
         pred_enc = model(xs_enc)
         loss = torch.nn.functional.cross_entropy(pred_enc, ys_enc).item()
         correct = (pred_enc.argmax(dim=-1) == ys_enc).sum().item()
@@ -229,7 +245,7 @@ Examples:
         pred = self.tokenizer.decode(pred_enc.argmax(dim=-1).unsqueeze(-1))
         xs_width = max(len(x) for x in xs)
         for i in range(10):
-            expected = "EXPECTED " + ys[i] if ys[i] != pred[i] else ""
+            expected = "EXPECTED " + ys[i] if ys[i] != pred[i] else "        "
             token_probs = [
                 f"{char if char.strip() else repr(char)}: {proba:.2f}"
                 for char, proba in zip(self.voc, pred_enc[i].detach().numpy())
@@ -240,14 +256,18 @@ Examples:
 
         return correct, loss
 
-    def print_template(self, depth: int, heads: int, inner_size: int) -> None:
+    def print_template(self,
+                       depth: int,
+                       heads: int,
+                       inner_size: int,
+                       default: str = "0.0") -> None:
         voc_size = self.vocab_size
         emb = inner_size * heads
 
         def mk_matrix(h: int, w: int) -> str:
             nl = "\n" + 12 * " "
             return f"Tensor([{nl}[" + f"],{nl}[".join(
-                ", ".join(f"0.0" for _ in range(w)) for _ in range(h)) + "]])"
+                ", ".join(default for _ in range(w)) for _ in range(h)) + "]])"
 
 
         template = f"""
@@ -256,20 +276,18 @@ Examples:
         pos_encoder = {mk_matrix(self.tokenizer.max_len, emb)}
         """
         for d in range(depth):
-            template += f"""
-        layer_{d}_weight = {mk_matrix(emb, emb)}
-        """
             for h in range(heads):
                 template += f"""
         layer_{d}_head_{h}_q = {mk_matrix(emb, inner_size)}
         layer_{d}_head_{h}_k = {mk_matrix(emb, inner_size)}
         layer_{d}_head_{h}_v = {mk_matrix(emb, inner_size)}
-        layer_{d}_head_{h} = [layer_{d}_head_{h}_q, layer_{d}_head_{h}_k, layer_{d}_head_{h}_v]
+        layer_{d}_head_{h} = (layer_{d}_head_{h}_q, layer_{d}_head_{h}_k, layer_{d}_head_{h}_v)
         """
             template += f"""
         layer_{d}_heads = [""" + ", ".join(f"layer_{d}_head_{h}" for h in range(heads)) + f"""]
-        layer_{d} = [layer_{d}_heads, layer_{d}_weight]
-            """
+        layer_{d}_weight = {mk_matrix(emb, emb)}
+        layer_{d} = (layer_{d}_heads, layer_{d}_weight)
+        """
         template += f"""
         layers = [""" + ", ".join(f"layer_{d}" for d in range(depth)) + "]"
 
@@ -277,7 +295,33 @@ Examples:
 
         return template
 
+class SaveOutputs:
+    """Hook to save outputs that removes itself after one use."""
+    def __init__(self, name=""):
+        self.name = name
+        self.outputs = []
 
+    def hook(self, module, inputs, outputs):
+        print(self.name, module, "ouptuts:")
+        print(outputs)
+        self.outputs.append(outputs)
+
+    def add_to(self, module: torch.nn.Module):
+
+        def _hook(module, inputs, outputs):
+            try:
+                self.hook(module, inputs, outputs)
+            finally:
+                handle.remove()
+
+        handle = module.register_forward_hook(_hook)
+
+    def add_to_all(self, modules: list, type=None):
+        for module in modules:
+            if not type or isinstance(module, type):
+                self.add_to(module)
+
+        return self
 
 def mkexo(name: str, voc: str, input_len: int) -> Exercise:
 
@@ -285,78 +329,3 @@ def mkexo(name: str, voc: str, input_len: int) -> Exercise:
         return Exercise(name, CharTokenizer(voc, input_len), f)
 
     return decorator
-
-
-if False:
-    TESTS = {
-        # "tokenizer",
-        # "position_encoder",
-        "transformer",
-    }
-
-    if "tokenizer" in TESTS:
-        print("Testing tokenizer")
-        tokenizer = CharTokenizer(list("123+="), 5)
-        encoded = tokenizer.encode(["1+2=", "1+21=="])
-        print(encoded)
-        decoded = tokenizer.decode(encoded)
-        print(decoded)
-
-    if "position_encoder" in TESTS:
-        print("Testing position encoder")
-        position_encoder = PositionEncoder()
-        x = torch.zeros(1, 800, 40)  # batch, tokens, embedding_size
-        plt.imshow(position_encoder(x).squeeze(0).detach().numpy())
-        plt.show()
-
-    if "transformer" in TESTS:
-        print("Testing transformer")
-        tokenizer = CharTokenizer(list("123+="), 5)
-        size = tokenizer.vocab_size
-        transformer = AttentionOnlyTransformer(size, size)
-        inputs = tokenizer.encode(["1+2=", "1+21=="])
-        print(transformer(inputs))
-
-    def gen_goal(tokenizer: CharTokenizer, count: int):
-        x = [
-            "".join(
-                random.choice(tokenizer.vocab)
-                for _ in range(random.randint(3, tokenizer.max_len)))
-            for _ in range(count)
-        ]
-        x = tokenizer.encode(x)
-        y = x[:, -2].unsqueeze(1)
-        return x, y
-
-    epochs = 100
-    tokenizer = CharTokenizer(list("123+="), 5)
-    transformer = AttentionOnlyTransformer(tokenizer.vocab_size,
-                                           tokenizer.vocab_size)
-    loss = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(transformer.parameters(), lr=0.01)
-
-    for epoch in tqdm(range(epochs)):
-        xs, ys = gen_goal(tokenizer, 25)
-        preds = transformer(xs)
-        # print(preds, ys)
-        lost = loss(
-            preds,
-            torch.nn.functional.one_hot(
-                ys, tokenizer.vocab_size).squeeze(1).float())
-        lost.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-
-    examples = 10
-    xs, ys = gen_goal(tokenizer, examples)
-    preds = transformer(xs)
-    best = torch.argmax(preds, dim=-1)
-
-    print(xs)
-    print(best)
-
-    for e in range(examples):
-        x = tokenizer.decode(xs[e:e + 1][0])
-        y = tokenizer.decode(ys[e:e + 1][0])
-        p = tokenizer.decode(best[e:e + 1][0])
-        print(x, p)
