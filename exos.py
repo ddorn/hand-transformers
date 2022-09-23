@@ -102,9 +102,19 @@ def exo9():
     return s, pat[1]
 
 
-@mkexo(name="10-TODO", voc="1234567890+=", input_len=6)
+@mkexo(name="10-Induction", voc="ABCDE", input_len=8)
 def exo10():
-    """TODO"""
+    """Complete with the token that followed the last time the last token was pressent.
+    For instance if the input ends in A, complete with the token after the last A."""
+
+    size = random.randrange(3, 8)
+    pat = random.choice('ABCDE')
+    bef = random.choices('ABCDE', k=random.randint(0, size - 2))
+    after = random.choices('ABCDE', k=size - 2 - len(bef))
+    s = ''.join(bef) + pat + ''.join(after) + pat
+    correct = s[s[:-1].rindex(pat) + 1]
+    return s, correct
+
 
 
 EXOS: List[Exercise] = [
@@ -213,4 +223,5 @@ def sol1():
 
 if __name__ == '__main__':
     # print(EXOS[1].print_template(1, 2, 6 // 2, default="0"))
-    sol1()
+    # sol1()
+    print(exo10)
