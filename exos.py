@@ -90,17 +90,15 @@ def exo8():
     return ''.join(s), min(a, b, c, d)
 
 
-@mkexo(name="09-ARecall", voc="A01", input_len=6)
+@mkexo(name="09-Copy", voc="01|", input_len=7)
 def exo9():
-    """Complete with the token following the last A."""
+    """Copy the input after the bar "|"."""
 
-    size = random.randrange(2, 6)
-    pat = "A" + random.choice("01")
-    pred = random.choices("A01", k=random.randint(0, size - 2))
-    after = random.choices("01", k=size - 2 - len(pred))
-    s = ''.join(pred) + pat + ''.join(after)
-    return s, pat[1]
-
+    size = random.randrange(1, 4)
+    s = "".join(random.choices("01", k=size))
+    s = s + "|" + s
+    cut = random.randrange(s.index("|") + 1, len(s))
+    return s[:cut], s[cut]
 
 @mkexo(name="10-Induction", voc="ABCDE", input_len=8)
 def exo10():
@@ -135,105 +133,6 @@ EXOS: List[Exercise] = [
     e for e in globals().values()
     if isinstance(e, Exercise)
 ]
-
-
-def sol0():
-    embedding = Tensor([
-        [0.0, 0.0],
-        [0.0, 1.0],
-        [0.5, 0.5],
-        [1.0, 0.0]])
-    unembedding = Tensor([
-        [0.0, 0.0, 0.7, 1.0],
-        [0.0, 1.0, 0.7, 0.0]]) * 100
-    pos_encoder = Tensor([
-        [0.0, 0.0],
-        [0.0, 0.0],
-        [0.0, 0.0]])
-
-    layers = []
-    model = exo0.mk_model(0, 1, 2, embedding, unembedding, pos_encoder, layers)
-    exo0.test(model)
-
-def sol1():
-    # It is likely impossible with only one attention head
-
-    embedding = Tensor([
-        [0, 0, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0],
-        [0, 1, 0, 0, 0, 0],
-        [0, 0, 1, 0, 0, 0]])
-    unembedding = Tensor([
-        [0, 1, 0, 0],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0]]) * 100
-    pos_encoder = Tensor([
-        [0, 0, 0, 1, 0, 0],
-        [0, 0, 0, 0, 1, 0],
-        [0, 0, 0, 0, 0, 1]])
-
-    layer_0_head_0_q = Tensor([
-        [0, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0],
-        [1, 1, 1]]) * 100
-    layer_0_head_0_k = Tensor([
-        [0, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0],
-        [1, 1, 1],
-        [0, 0, 0]])
-    layer_0_head_0_v = Tensor([
-        [1, 0, 0],
-        [0, 1, 0],
-        [0, 0, 1],
-        [0, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0]])
-    layer_0_head_0 = (layer_0_head_0_q, layer_0_head_0_k, layer_0_head_0_v)
-
-    layer_0_head_1_q = Tensor([
-        [0, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0],
-        [1, 0, 0],
-        [0, 1, 0],
-        [0, 0, 1]]) * 100
-    layer_0_head_1_k = layer_0_head_1_q
-    layer_0_head_1_v = Tensor([
-        [1, 0, 0],
-        [0, 1, 0],
-        [0, 0, 1],
-        [0, 0, 0],
-        [0, 0, 0],
-        [0, 0, 0]])
-    layer_0_head_1 = (layer_0_head_1_q, layer_0_head_1_k, layer_0_head_1_v)
-
-    layer_0_heads = [layer_0_head_0, layer_0_head_1]
-    layer_0_weight = Tensor([
-        [1, 0, 0, -1, 0, 0],
-        [0, 1, 0, 0, -1, 0],
-        [0, 0, 1, 0, 0, -1],
-        [0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0]])
-    layer_0 = (layer_0_heads, layer_0_weight)
-
-    layers = [layer_0]
-
-    set_debug(())
-
-    model = EXOS[1].mk_model(1, 2, 3, embedding, unembedding, pos_encoder, layers)
-    import torch
-    model(torch.tensor([[0, 1, 2]]))
-    # EXOS[1].test(model, nb_tests=100)
-
 
 if __name__ == '__main__':
     # print(EXOS[1].print_template(1, 2, 6 // 2, default="0"))
