@@ -116,6 +116,20 @@ def exo10():
     return s, correct
 
 
+@mkexo(name="11-BinaryAdd", voc="01+=", input_len=12)
+def exo11():
+    """Complete with the sum of the two binary numbers."""
+
+    size = 3
+    a = random.randrange(0, 2 ** size)
+    b = random.randrange(0, 2 ** size)
+    s = f"{a:b}+{b:b}={a + b:b}"
+
+    cut = random.randrange(s.index("=") + 1, len(s))
+    return s[:cut], s[cut]
+
+
+
 
 EXOS: List[Exercise] = [
     e for e in globals().values()
@@ -224,4 +238,4 @@ def sol1():
 if __name__ == '__main__':
     # print(EXOS[1].print_template(1, 2, 6 // 2, default="0"))
     # sol1()
-    print(exo10)
+    print(exo11)
