@@ -160,7 +160,9 @@ class AttentionOnlyTransformer(torch.nn.Module):
         x = self.blocks(with_pos)
         out = x[:, -1, :].squeeze(1)  # only the last token is the prediction
         unembeded = out @ self.unembedding
+        debug(unembeded, "unembeded")
         probas = torch.softmax(unembeded, dim=-1)
+        debug(probas, "probas")
         return probas
 
 

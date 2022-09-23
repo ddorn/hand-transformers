@@ -5,7 +5,7 @@ from hand import Exercise, mkexo, set_debug
 
 __all__ = [
     'exo0', 'exo1', 'exo2', 'exo3', 'exo4', 'exo5', 'exo6', 'exo7', 'exo8',
-    'exo9', 'exo10', 'EXOS',
+    'exo9', 'exo10', 'exo11', 'EXOS',
     'set_debug'
 ]
 
@@ -27,13 +27,13 @@ def exo1():
     return s, s[-2]
 
 
-@mkexo(name="02-FirstChar", voc="abc", input_len=3)
+@mkexo(name="02-FirstChar", voc="abc", input_len=5)
 def exo2():
     """Complete the text by repeating the first character.
     Note: the first character is not always at the same position,
     since inputs have variable length."""
 
-    size = random.randrange(1, 4)
+    size = random.randrange(2, 5)  # We kindly ensure that there is always one pad token
     s = "".join(random.choices("abc", k=size))
     return s, s[0]
 
@@ -238,4 +238,8 @@ def sol1():
 if __name__ == '__main__':
     # print(EXOS[1].print_template(1, 2, 6 // 2, default="0"))
     # sol1()
-    print(exo11)
+    # print(exo2)
+    print(EXOS[2].print_template(depth=1,
+        heads=1,
+        inner_size=8,
+        default="0"))
