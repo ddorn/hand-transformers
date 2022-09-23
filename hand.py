@@ -325,8 +325,9 @@ Examples:
 # ------------------------------ #
 
 DEBUG = set(("",))  # debug everythin
+EllipsisType = type(...)
 
-def set_debug(*args: Union[str, List[Union[str, int, type(...)]]]) -> None:
+def set_debug(*args: Union[str, List[Union[str, int, EllipsisType]]]) -> None:
     """Print matrices whose name correspond to the pattern
 
     Examples:

@@ -1,16 +1,13 @@
 import random
-from typing import List
+from typing import Dict, List
 from torch import Tensor
 from hand import Exercise, mkexo, set_debug
 
-__all__ = [
-    'exo0', 'exo1', 'exo2', 'exo3', 'exo4', 'exo5', 'exo6', 'exo7', 'exo8',
-    'exo9', 'exo10', 'exo11', 'EXOS',
-    'set_debug'
-]
+__all__ = ['EXOS', 'set_debug']
 
-@mkexo(name="00-LastChar", voc="abc", input_len=3)
-def exo0():
+# Solved. Trivial.
+@mkexo(name="LastChar", voc="abc", input_len=3)
+def last_char():
     """Complete the text by repeating the last character."""
 
     size = random.randrange(1, 4)
@@ -18,8 +15,9 @@ def exo0():
     return s, s[-1]
 
 
-@mkexo(name="01-CycleTwo", voc="abc", input_len=3)
-def exo1():
+# Solved. Simple.
+@mkexo(name="CycleTwo", voc="abc", input_len=3)
+def cycle_two():
     """Complete the text by repeating the second-last character."""
 
     size = random.randrange(2, 4)
@@ -27,8 +25,9 @@ def exo1():
     return s, s[-2]
 
 
-@mkexo(name="02-FirstChar", voc="abc", input_len=5)
-def exo2():
+# Solved. Somewhat simple.
+@mkexo(name="FirstChar", voc="abc", input_len=5)
+def first_char():
     """Complete the text by repeating the first character.
     Note: the first character is not always at the same position,
     since inputs have variable length."""
@@ -38,8 +37,9 @@ def exo2():
     return s, s[0]
 
 
-@mkexo(name="03-Reverse", voc="abc|", input_len=5)
-def exo3():
+# Hard.
+@mkexo(name="Reverse", voc="abc|", input_len=5)
+def reverse():
     """Complete the text by reversing the input after the bar "|"."""
 
     size = random.randrange(1, 4)
@@ -49,24 +49,25 @@ def exo3():
     return s[:cut], s[cut]
 
 
-@mkexo(name="04-Difference", voc="01", input_len=2)
-def exo4():
+# Easy but not very interesting. Can be nice to get started.
+@mkexo(name="Difference", voc="01", input_len=2)
+def difference():
     """Complete by 0 if the two digits are different and by 1 if they are the same."""
 
     a, b = random.choices("01", k=2)
     return a + b, "01"[a == b]
 
 
-@mkexo(name="05-AllTheSame", voc="012", input_len=3)
-def exo5():
+@mkexo(name="AllTheSame", voc="012", input_len=3)
+def all_the_same():
     """Complete by 1 if all the digits are the same and by 0 otherwise."""
 
     a, b, c = random.choices("012", k=3)
     return a + b + c, "01"[a == b == c]
 
 
-@mkexo(name="06-KinderAdder", voc="01234", input_len=2)
-def exo6():
+@mkexo(name="KinderAdder", voc="01234", input_len=2)
+def kinder_adder():
     """Complete by the sum of the two digits.
     Note: no input will use digits 3 and 4."""
 
@@ -74,24 +75,26 @@ def exo6():
     return a + b, str(int(a) + int(b))
 
 
-@mkexo(name="07-LengthParity", voc="0", input_len=8)
-def exo7():
+# Probaby not the most interesting
+@mkexo(name="LengthParity", voc="0", input_len=8)
+def length_parity():
     """Complete by 0 if the input length is even and by the empty token otherwise."""
 
     size = random.randrange(1, 8)
     return "0" * size, "0" * (size % 2)
 
 
-@mkexo(name="08-Min", voc="0123", input_len=4)
-def exo8():
+@mkexo(name="Min", voc="0123", input_len=4)
+def minimum():
     """Complete by the minimum of the four digits."""
 
     a, b, c, d = s = random.choices("0123", k=4)
     return ''.join(s), min(a, b, c, d)
 
 
-@mkexo(name="09-Copy", voc="01|", input_len=7)
-def exo9():
+# Essential. Basis for many other...
+@mkexo(name="Copy", voc="01|", input_len=7)
+def copy():
     """Copy the input after the bar "|"."""
 
     size = random.randrange(1, 4)
@@ -100,8 +103,9 @@ def exo9():
     cut = random.randrange(s.index("|") + 1, len(s))
     return s[:cut], s[cut]
 
-@mkexo(name="10-Induction", voc="ABCDE", input_len=8)
-def exo10():
+# Medium. Builds on FirstChar.
+@mkexo(name="Induction", voc="ABCDE", input_len=8)
+def induction():
     """Complete with the token that followed the last time the last token was pressent.
     For instance if the input ends in A, complete with the token after the last A."""
 
@@ -114,8 +118,8 @@ def exo10():
     return s, correct
 
 
-@mkexo(name="11-BinaryAdd", voc="01+=", input_len=12)
-def exo11():
+@mkexo(name="BinaryAdd", voc="01+=", input_len=12)
+def binary_add():
     """Complete with the sum of the two binary numbers."""
 
     size = 3
@@ -129,10 +133,11 @@ def exo11():
 
 
 
-EXOS: List[Exercise] = [
-    e for e in globals().values()
+EXOS: Dict[str, Exercise] = {
+    e.name: e
+    for e in globals().values()
     if isinstance(e, Exercise)
-]
+}
 
 if __name__ == '__main__':
     # print(EXOS[1].print_template(1, 2, 6 // 2, default="0"))

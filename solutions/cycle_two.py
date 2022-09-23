@@ -4,7 +4,7 @@ from exos import EXOS, set_debug
 
 torch.set_printoptions(precision=2, sci_mode=False, linewidth=200)
 
-EXO = EXOS[1]
+EXO = EXOS['CycleTwo']
 DEPTH = 2
 HEADS = 1
 EMBED_SIZE = 9
