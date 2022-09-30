@@ -1,3 +1,4 @@
+from audioop import mul
 import random
 from textwrap import dedent
 from typing import Callable, List, Tuple, Type, Union
@@ -126,14 +127,17 @@ class MultiAttentionHead(torch.nn.Module):
 
         self.heads = torch.nn.ModuleList(
             [AttentionHead(embedding_size, out_size, layer=layer, n=n) for n in range(heads)])
-        self.weight = torch.nn.Linear(embedding_size, embedding_size, bias=False)
+        self.weight = torch.nn.Parameter(torch.randn(embedding_size, embedding_size))
 
     def forward(self, x: TensorType['b', 't',
                                     'emb']) -> TensorType['b', 't', 'out']:
         combined = torch.cat([head(x) for head in self.heads], dim=-1)
         debug(combined, self.layer, "heads-combined")
-        output = x + self.weight(combined)
-        debug(output, self.layer, "multihead")
+        multihead = combined @ self.weight
+        debug(self.weight, self.layer, "heads-weight")
+        debug(multihead, self.layer, "multihead")
+        output = multihead + x
+        debug(output, self.layer, "layer")
         return output
 
 
@@ -155,8 +159,10 @@ class AttentionOnlyTransformer(torch.nn.Module):
 
     def forward(self, x: TensorType['batch', 'token']) -> List[str]:
         embeded = self.embedding(x)
+        debug(embeded, "embeded")
         # with_pos = self.position_encoder(embeded)
         with_pos = embeded + self.position_encoder
+        debug(with_pos, "embed+pos")
         x = self.blocks(with_pos)
         out = x[:, -1, :].squeeze(1)  # only the last token is the prediction
         unembeded = out @ self.unembedding
@@ -247,7 +253,7 @@ Examples:
                 model.blocks[i].heads[j].queries = p(q)
                 model.blocks[i].heads[j].keys = p(k)
                 model.blocks[i].heads[j].values = p(v)
-            model.blocks[i].weight.weight = p(weight)
+            model.blocks[i].weight = p(weight)
 
         return model
 
@@ -351,8 +357,44 @@ def debug(value: TensorType, *name: Union[str, int]) -> None:
         else:
             # We have found a pattern that matches
             print(*name)
-            print(value)
+            pprint_2d_tensor(value)
             return
+
+def chrange(x, start_range, target_range, flip=False):
+    normalised = (x - start_range[0]) / (start_range[1] - start_range[0])
+    if flip:
+        normalised = 1 - normalised
+    return normalised * (target_range[1] - target_range[0]) + target_range[0]
+
+def pprint_2d_tensor(t: TensorType):
+    if t.dim() == 3:
+        t = t.squeeze(0)
+
+    if t.dim() != 2:
+        return print(t)
+
+    maxi = t.max().item()
+    mini = t.min().item()
+
+    def color(x):
+        if x < 0:
+            v = int(chrange(x, (mini, 0), (0, 180), flip=True))
+            c = f'{v//2};{v//2};{v}'
+        elif maxi == 0:
+            c = '0;0;0'
+        else:
+            v = int(chrange(x, (0, maxi), (0, 180), flip=False))
+            c = f'{v//2};{v};{v//2}'
+
+        return f'\033[48;2;{c}m'
+
+    width = len(f"{maxi:.1f}")
+    for i in range(t.shape[0]):
+        for j in range(t.shape[1]):
+            v = t[i, j].item()
+            print(f"{color(v)}{v:{width}.1f}", end=' ')
+        print("\033[0m")
+
 
 
 def mkexo(name: str, voc: str, input_len: int) -> Exercise:

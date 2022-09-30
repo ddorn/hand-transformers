@@ -37,12 +37,12 @@ def first_char():
     return s, s[0]
 
 
-# Hard.
-@mkexo(name="Reverse", voc="abc|", input_len=5)
+# Doable.  abc|cb
+@mkexo(name="Reverse", voc="abc|", input_len=8)
 def reverse():
     """Complete the text by reversing the input after the bar "|"."""
 
-    size = random.randrange(1, 4)
+    size = random.randrange(1, 5)
     s = "".join(random.choices("abc", k=size))
     s = s + "|" + s[::-1]
     cut = random.randrange(s.index("|") + 1, len(s))
@@ -110,12 +110,9 @@ def induction():
     For instance if the input ends in A, complete with the token after the last A."""
 
     size = random.randrange(3, 8)
-    pat = random.choice('ABCDE')
-    bef = random.choices('ABCDE', k=random.randint(0, size - 2))
-    after = random.choices('ABCDE', k=size - 2 - len(bef))
-    s = ''.join(bef) + pat + ''.join(after) + pat
-    correct = s[s[:-1].rindex(pat) + 1]
-    return s, correct
+    s = ''.join(random.choices("ABCDE", k=size - 1))
+    s += random.choice(s)
+    return s, s[s[:-1].rindex(s[-1]) + 1]
 
 
 @mkexo(name="BinaryAdd", voc="01+=", input_len=12)
@@ -131,8 +128,6 @@ def binary_add():
     return s[:cut], s[cut]
 
 
-
-
 EXOS: Dict[str, Exercise] = {
     e.name: e
     for e in globals().values()
@@ -140,10 +135,9 @@ EXOS: Dict[str, Exercise] = {
 }
 
 if __name__ == '__main__':
-    # print(EXOS[1].print_template(1, 2, 6 // 2, default="0"))
-    # sol1()
-    # print(exo2)
-    print(EXOS[2].print_template(depth=1,
-        heads=1,
-        inner_size=8,
-        default="0"))
+    import sys
+    print(sys.argv, len(sys.argv))
+
+    for name, exo in EXOS.items():
+        print(f'\033[34m{name}\033[0m', end=': ')
+        print(exo.description.splitlines()[0])
