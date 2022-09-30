@@ -115,6 +115,18 @@ def induction():
     return s, s[s[:-1].rindex(s[-1]) + 1]
 
 
+# Doable. One new idea.
+@mkexo(name="Sort", voc="|012345", input_len=12)
+def sort():
+    """Complete by the sorted version of the input after the bar."""
+
+    size = random.randrange(2, 7)
+    s = ''.join(random.choices("012345", k=size))
+    complete = s + '|' + ''.join(sorted(s))
+    cut = random.randrange(len(s) + 1, len(complete))
+    return complete[:cut], complete[cut]
+
+
 @mkexo(name="BinaryAdd", voc="01+=", input_len=12)
 def binary_add():
     """Complete with the sum of the two binary numbers."""
@@ -138,6 +150,10 @@ if __name__ == '__main__':
     import sys
     print(sys.argv, len(sys.argv))
 
-    for name, exo in EXOS.items():
-        print(f'\033[34m{name}\033[0m', end=': ')
-        print(exo.description.splitlines()[0])
+    if len(sys.argv) >= 2:
+        for name in sys.argv[1:]:
+            print(EXOS[name])
+    else:
+        for name, exo in EXOS.items():
+            print(f'\033[34m{name}\033[0m', end=': ')
+            print(exo.description.splitlines()[0])
