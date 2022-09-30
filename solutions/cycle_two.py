@@ -78,11 +78,13 @@ layer_0_weight = Tensor([
     [0, 0, 1, 0, 0, -1],
     [0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0]])
+    [0, 0, 0, 0, 0, 0]]).T
 layer_0 = (layer_0_heads, layer_0_weight)
 
 layers = [layer_0]
 
 model = EXO.mk_model(1, 2, 3, embedding, unembedding, pos_encoder, layers)
 model(torch.tensor([[0, 1, 2]]))
-# EXO.test(model, nb_tests=100)
+
+set_debug()
+EXO.test(model, nb_tests=100)
