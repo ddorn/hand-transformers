@@ -1,5 +1,4 @@
-from audioop import mul
-import random
+import math
 from textwrap import dedent
 from typing import Callable, List, Tuple, Type, Union
 
@@ -326,6 +325,13 @@ Examples:
         return template
 
 
+def mkexo(name: str, voc: str, input_len: int) -> Exercise:
+
+    def decorator(f: Callable[[], Tuple[str, str]]) -> Exercise:
+        return Exercise(name, CharTokenizer(voc, input_len), f)
+
+    return decorator
+
 # ------------------------------ #
 # Help for visualizing the model #
 # ------------------------------ #
@@ -397,9 +403,41 @@ def pprint_2d_tensor(t: TensorType):
 
 
 
-def mkexo(name: str, voc: str, input_len: int) -> Exercise:
+def show_model(model: torch.nn.Module) -> None:
+    params = list(model.named_parameters())
+    param_count = len(params)
 
-    def decorator(f: Callable[[], Tuple[str, str]]) -> Exercise:
-        return Exercise(name, CharTokenizer(voc, input_len), f)
+    width = math.ceil(math.sqrt(param_count))
+    height = math.ceil(param_count / width)
 
-    return decorator
+    for i, (name, param) in enumerate(params):
+        plt.subplot(height, width, i + 1)
+        if param.ndim == 1:
+            plt.plot(param.detach().numpy())
+        else:
+            plt.imshow(param.detach().numpy())
+            # Show scale
+            plt.colorbar()
+        plt.title(name)
+
+    plt.tight_layout()
+
+
+##########################
+#       Other tools      #
+##########################
+
+
+def cat(*args: Union[torch.TensorType, list]):
+    """Concatenate 2D tensors on both dimensions."""
+    parts = []
+    for arg in args:
+        if isinstance(arg, torch.Tensor):
+            parts.append(arg)
+            # print(arg.shape)
+        else:
+            # print(*[a.shape for a in arg])
+            parts.append(torch.cat(arg, dim=1))
+
+
+    return torch.cat(parts, dim=0)

@@ -2,9 +2,14 @@ from asyncio import trsock
 import torch
 from torch import Tensor, tensor
 from exos import EXOS, set_debug
+from hand import cat
 
 torch.set_printoptions(precision=1, sci_mode=False, linewidth=200)
 
+
+I = torch.eye
+O = torch.zeros
+F = torch.full
 
 EXO = EXOS['Reverse']
 DEPTH = 2
@@ -13,23 +18,6 @@ EMBED_SIZE = 4 + 8 + 8  # tokens + pos + working space
 INNER_SIZE = EMBED_SIZE // HEADS
 
 # print(EXO.print_template(DEPTH, HEADS, INNER_SIZE, default="0"))
-
-I = torch.eye
-O = torch.zeros
-F = torch.full
-
-def cat(*args):
-    parts = []
-    for arg in args:
-        if isinstance(arg, Tensor):
-            parts.append(arg)
-            # print(arg.shape)
-        else:
-            # print(*[a.shape for a in arg])
-            parts.append(torch.cat(arg, dim=1))
-
-
-    return torch.cat(parts, dim=0)
 
 embedding = cat(O(1, EMBED_SIZE),
                 [I(4), O(4, EMBED_SIZE - 4)])
