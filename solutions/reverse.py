@@ -2,7 +2,7 @@ from asyncio import trsock
 import torch
 from torch import Tensor, tensor
 from exos import EXOS, set_debug
-from hand import cat
+from hand import cat, show_activations, show_transformer
 
 torch.set_printoptions(precision=1, sci_mode=False, linewidth=200)
 
@@ -101,7 +101,14 @@ layers = [layer_0, layer_1]
 
 
 model = EXO.mk_model(DEPTH, HEADS, INNER_SIZE, embedding, unembedding, pos_encoder, layers)
-EXO.test(model, nb_tests=100)
+
+show_transformer(model)
+show_activations(model, EXO.tokenizer.encode(["abc|c"]))
+
+import matplotlib.pyplot as plt
+plt.show()
+
+# EXO.test(model, nb_tests=100)
 
 # set_debug((..., 'layer'), (1,), ("embed+pos",))
 # model(tensor([[0, 0, 0, 0, 2, 1,  4, 1]]))

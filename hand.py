@@ -1,6 +1,9 @@
+from contextlib import contextmanager
+from distutils.log import debug
+import enum
 import math
 from textwrap import dedent
-from typing import Callable, List, Tuple, Type, Union
+from typing import Callable, List, Optional, Tuple, Type, Union
 
 import einops
 import matplotlib.pyplot as plt
@@ -140,10 +143,32 @@ class MultiAttentionHead(torch.nn.Module):
         return output
 
 
-class AttentionOnlyTransformer(torch.nn.Module):
+class ResidualMLP(torch.nn.Module):
+    def __init__(self, embeding_size: int, *layers_dims: int, layer:int=None) -> None:
+        super().__init__()
+        dims = embeding_size, *layers_dims, embeding_size
+        self.layers = torch.nn.ModuleList([
+            torch.nn.Linear(dims[i], dims[i + 1])
+            for i in range(len(dims) - 1)
+        ])
+
+    def forward(self, x: TensorType['batch', 'tokens', 'embedding_size']) -> TensorType['batch', 'tokens', 'embedding_size']:
+        initial = x
+        for l, layer in enumerate(self.layers):
+            x = layer(x)
+            debug(x, self.layer, "mlp", l)
+            x = torch.relu(x)
+            debug(x, self.layer, "mlp", l, "relu")
+
+        x = x + initial
+        debug(x, self.layer, "mlp", "residual")
+        return x
+
+class Transformer(torch.nn.Module):
 
     def __init__(self, voc_size: int, embedding_size: int, depth: int,
-                 heads: int, pos_encoder: TensorType['max_prompt_len', 'embedding_size']) -> None:
+                 heads: int, pos_encoder: TensorType['max_prompt_len', 'embedding_size'],
+                 mlp_dims: Optional[Tuple[int, ...]]=None) -> None:
         super().__init__()
 
         self.depth = depth
@@ -152,8 +177,19 @@ class AttentionOnlyTransformer(torch.nn.Module):
         self.embedding = torch.nn.Embedding(voc_size, embedding_size)
         # self.position_encoder = PositionEncoder()
         self.position_encoder = pos_encoder
-        self.blocks = torch.nn.Sequential(
-            *[MultiAttentionHead(embedding_size, heads, layer=layer) for layer in range(depth)])
+
+        heads = [
+            MultiAttentionHead(embedding_size, heads, layer=layer)
+            for layer in range(depth)
+        ]
+        if mlp_dims is not None:
+            mlps = [ResidualMLP(embedding_size, *mlp_dims) for _ in range(depth)]
+            # Interleave heads and mlps
+            blocks = [block for layer in zip(heads, mlps) for block in layer]
+        else:
+            blocks = heads
+
+        self.blocks = torch.nn.ModuleList(blocks)
         self.unembedding = torch.nn.Parameter(torch.rand(embedding_size, voc_size))
 
     def forward(self, x: TensorType['batch', 'token']) -> List[str]:
@@ -237,12 +273,16 @@ Examples:
                                               'embedding'],  # W per layer
                            # Feed forward ? norm ?
                            ]],
-    ) -> AttentionOnlyTransformer:
+    ) -> Transformer:
+        """Create a model with the given parameters. MLP not supported."""
+
+        # This method was supposed to make it easier to build models
+        # for the hackaton, but I don't think it useful for my tinkering.
 
         # Shorthand
         p = lambda x: torch.nn.Parameter(x, requires_grad=False)
 
-        model = AttentionOnlyTransformer(self.tokenizer.vocab_size,
+        model = Transformer(self.tokenizer.vocab_size,
                                          inner_size * heads, depth, heads, position_encoder)
         model.embedding.weight = p(embedding)
         model.unembedding = p(unembedding)
@@ -338,21 +378,7 @@ def mkexo(name: str, voc: str, input_len: int) -> Exercise:
 
 DEBUG = set(("",))  # debug everythin
 EllipsisType = type(...)
-
-def set_debug(*args: Union[str, List[Union[str, int, EllipsisType]]]) -> None:
-    """Print matrices whose name correspond to the pattern
-
-    Examples:
-        set_debug() will print nothing.
-        set_debug(()) will print everthing possible.
-        set_debug(1) will print everything happening the first layer.
-        set_debug([1, 2, "head"]) will print the output of the second head of the first layer.
-        set_debug([1, ..., "q"]) will print all queries of the first layer.
-        set_debug([..., ..., "q"], [..., ..., "k"]) will print all queries and keys of all layers.
-    """
-    args = [a if isinstance(a, tuple) else (a,) for a in args]
-    DEBUG.clear()
-    DEBUG.update(args)
+DEBUG_CALLBACK = None
 
 def debug(value: TensorType, *name: Union[str, int]) -> None:
     for pattern in DEBUG:
@@ -362,9 +388,45 @@ def debug(value: TensorType, *name: Union[str, int]) -> None:
                 break  # not a match, next pattern
         else:
             # We have found a pattern that matches
-            print(*name)
-            pprint_2d_tensor(value)
+            if DEBUG_CALLBACK is not None:
+                DEBUG_CALLBACK(value, *name)
+            else:
+                print(*name)
+                pprint_2d_tensor(value)
             return
+
+
+def set_debug(*args: Union[str, List[Union[str, int, EllipsisType]]], callback=None) -> None:
+    """Print matrices whose name correspond to the pattern
+
+    Examples:
+        set_debug() will print nothing.
+        set_debug(()) will print everthing possible.
+        set_debug(1) will print everything happening the first layer.
+        set_debug([1, 2, "head"]) will print the output of the second head of the first layer.
+        set_debug([1, ..., "q"]) will print all queries of the first layer.
+        set_debug([..., ..., "q"], [..., ..., "k"]) will print all queries and keys of all layers.
+
+    Optionnally, a callback can be provided to perfom an action instead of printing.
+    """
+
+    args = [a if isinstance(a, tuple) else (a,) for a in args]
+    DEBUG.clear()
+    DEBUG.update(args)
+    global DEBUG_CALLBACK
+    DEBUG_CALLBACK = callback
+
+@contextmanager
+def temp_debug(*args: Union[str, List[Union[str, int, EllipsisType]]], callback) -> None:
+    """Same as set_debug but only for the duration of the context."""
+    old_debug = DEBUG.copy()
+    old_callback = DEBUG_CALLBACK
+    set_debug(*args, callback=callback)
+    try:
+        yield
+    finally:
+        set_debug(*old_debug, callback=old_callback)
+
 
 def chrange(x, start_range, target_range, flip=False):
     normalised = (x - start_range[0]) / (start_range[1] - start_range[0])
@@ -410,6 +472,7 @@ def show_model(model: torch.nn.Module) -> None:
     width = math.ceil(math.sqrt(param_count))
     height = math.ceil(param_count / width)
 
+    plt.figure(figsize=(width * 2, height * 2))
     for i, (name, param) in enumerate(params):
         plt.subplot(height, width, i + 1)
         if param.ndim == 1:
@@ -422,6 +485,63 @@ def show_model(model: torch.nn.Module) -> None:
 
     plt.tight_layout()
 
+def show_transformer(model: Transformer) -> None:
+    height = (model.heads + 1) * model.depth + 2
+
+    def imshow(x, line, col, name: str):
+        # plt.subplot(height, 3, line * 3 + col + 1)
+        plt.subplot(3, height, col * height + line + 1)
+        plt.imshow(x.detach().numpy())
+        plt.colorbar()
+        plt.title(name)
+
+
+    imshow(model.embedding.weight, 0, 1, "Embedding")
+    for l, layer in enumerate(model.blocks):
+        head: AttentionHead
+        for h, head in enumerate(layer.heads):
+            imshow(head.queries, l * (model.heads + 1) + h + 1, 0, f"Layer {l} Head {h} Q")
+            imshow(head.keys,    l * (model.heads + 1) + h + 1, 1, f"Layer {l} Head {h} K")
+            imshow(head.values,  l * (model.heads + 1) + h + 1, 2, f"Layer {l} Head {h} V")
+        imshow(layer.weight, l * (model.heads + 1) + model.heads + 1, 0, f"Layer {l} Weight")
+    imshow(model.unembedding, height - 1, 1, "Unembedding")
+
+    plt.tight_layout()
+
+
+def show_activations(model: Transformer, input_: TensorType['token']) -> None:
+    activations = []
+    def store_activations(value: TensorType, *name: Union[str, int]):
+        activations.append((' '.join(map(str, name)), value))
+
+    with temp_debug((), callback=store_activations):
+        model(input_)
+
+    param_count = len(activations)
+    width = math.ceil(math.sqrt(param_count))
+    height = math.ceil(param_count / width)
+
+    fig, axes = plt.subplots(height, width)
+
+    for i, (name, param) in enumerate(activations):
+        plt.subplot(height, width, i + 1)
+        param.squeeze_(0)
+        ax = axes[i // width, i % width]
+        if param.ndim == 1:
+            ax.stem(param.detach().numpy())
+        else:
+            im = ax.imshow(param.detach().numpy())
+            for i in range(param.shape[0]):
+                for j in range(param.shape[1]):
+                    value = param[i, j].item()
+                    if abs(value) > 0.01:
+                        ax.text(j, i, f"{param[i, j]:.1f}", ha="center", va="center", color="w")
+            # im.colorbar()  # Show scale
+        plt.title(name)
+
+    plt.tight_layout()
+
+
 
 ##########################
 #       Other tools      #
@@ -429,7 +549,9 @@ def show_model(model: torch.nn.Module) -> None:
 
 
 def cat(*args: Union[torch.TensorType, list]):
-    """Concatenate 2D tensors on both dimensions."""
+    """Concatenate 2D tensors on both dimensions.
+
+    Args are stacked vertically, and each arg is stacked horizontally."""
     parts = []
     for arg in args:
         if isinstance(arg, torch.Tensor):

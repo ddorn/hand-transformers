@@ -49,13 +49,12 @@ def reverse():
     return s[:cut], s[cut]
 
 
-# Easy but not very interesting. Can be nice to get started.
-@mkexo(name="Difference", voc="01", input_len=2)
+@mkexo(name="XOR", voc="01", input_len=2)
 def difference():
-    """Complete by 0 if the two digits are different and by 1 if they are the same."""
+    """Complete by 1 if the two digits are different and by 0 if they are the same."""
 
     a, b = random.choices("01", k=2)
-    return a + b, "01"[a == b]
+    return a + b, "01"[a != b]
 
 
 @mkexo(name="AllTheSame", voc="012", input_len=3)
@@ -125,6 +124,36 @@ def sort():
     complete = s + '|' + ''.join(sorted(s))
     cut = random.randrange(len(s) + 1, len(complete))
     return complete[:cut], complete[cut]
+
+
+def fixed_addition(base: int, length: int):
+    def to_base(x, n):
+        return ((x == 0) and "0") or (to_base(x // n, n).lstrip("0") + "0123456789abcdefghijklmnopqrstuvwxyz"[x % n])
+
+    a = random.randrange(0, base ** length)
+    b = random.randrange(0, base ** length)
+    s = to_base(a, base) + to_base(b, base)
+    if length == 1:
+        return s, to_base(a + b, base)[-1]
+    else:
+        d = random.randrange(0, length)
+        return s + to_base(d), to_base(a + b, base).ljust(length+1, "0")[d+1]
+
+
+@mkexo(name="AddFixedBase2Mod4", voc="01", input_len=5)
+def add_1():
+    """Input is of the form "d a₁ a₂ b₁ b₂. Complete by the d-th digit of a+b."""
+
+    return fixed_addition(2, 2)
+
+    size = 2
+    a = random.randrange(0, 2 ** size)
+    b = random.randrange(0, 2 ** size)
+    d = random.randrange(0, 2)
+    s = f"{d}{a:b}{b:b}"
+    answer = f"{(a + b) % 4:b}"[d]
+
+    return s, answer
 
 
 @mkexo(name="BinaryAdd", voc="01+=", input_len=12)

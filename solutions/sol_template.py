@@ -10,6 +10,28 @@ HEADS = 1
 EMBED_SIZE = 9
 INNER_SIZE = EMBED_SIZE // HEADS
 
+
+def sol():
+
+    embedding = ...
+    unembedding = embedding.T
+    pos_encoding = ...
+
+    wq_00 = ...
+    wk_00 = ...
+    wv_00 = ...
+    head_00 = (wq_00, wk_00, wv_00)
+    weight_0 = ...
+
+    layers = [
+        ([head_00], weight_0),
+    ]
+
+    model = EXO.mk_model(DEPTH, HEADS, EMBED_SIZE, INNER_SIZE,
+        embedding, unembedding, pos_encoding, layers)
+
+    return model
+
 if __name__ == '__main__':
     torch.set_printoptions(precision=2, sci_mode=False, linewidth=200)
 
