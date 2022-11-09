@@ -1,15 +1,14 @@
 from contextlib import contextmanager
 from distutils.log import debug
-import enum
 import math
 from textwrap import dedent
 from typing import Callable, List, Optional, Tuple, Type, Union
 
 import einops
 import matplotlib.pyplot as plt
+import numpy
 import torch
 from torchtyping import TensorType, patch_typeguard
-import tqdm
 from typeguard import typechecked
 
 patch_typeguard()
@@ -85,6 +84,14 @@ class PositionEncoder(torch.nn.Module):  # Not used
 class AttentionHead(torch.nn.Module):
 
     def __init__(self, embedding_size: int, out_size: int, layer:int=None, n:int=None) -> None:
+        """A single attention head.
+
+        Args:
+            embedding_size (int): The size of the input embedding.
+            out_size (int): The size of the output embedding.
+            layer (int): The layer number, for debugging purposes.
+            n (int): The head number, for debugging purposes.
+        """
         super().__init__()
 
         self.layer = layer
@@ -117,6 +124,15 @@ class AttentionHead(torch.nn.Module):
 
         return out
 
+    def set(self, keys, queries, values):
+        """Helper function to set the three matrices. Checks that the sizes are correct."""
+        assert keys.shape == self.keys.shape
+        assert queries.shape == self.queries.shape
+        assert values.shape == self.values.shape
+        self.keys = torch.nn.Parameter(keys)
+        self.queries = torch.nn.Parameter(queries)
+        self.values = torch.nn.Parameter(values)
+
 
 class MultiAttentionHead(torch.nn.Module):
 
@@ -136,7 +152,6 @@ class MultiAttentionHead(torch.nn.Module):
         combined = torch.cat([head(x) for head in self.heads], dim=-1)
         debug(combined, self.layer, "heads-combined")
         multihead = combined @ self.weight
-        debug(self.weight, self.layer, "heads-weight")
         debug(multihead, self.layer, "multihead")
         output = multihead + x
         debug(output, self.layer, "layer")
@@ -145,7 +160,16 @@ class MultiAttentionHead(torch.nn.Module):
 
 class ResidualMLP(torch.nn.Module):
     def __init__(self, embeding_size: int, *layers_dims: int, layer:int=None) -> None:
+        """An MLP with residual a connection.
+
+        Args:
+            embedding_size (int): The size of the input and output embedding.
+            *layers_dims (int): The dimensions of the hidden layers.
+            layer (int): The layer number, for debugging purposes.
+        """
+
         super().__init__()
+        self.layer = layer
         dims = embeding_size, *layers_dims, embeding_size
         self.layers = torch.nn.ModuleList([
             torch.nn.Linear(dims[i], dims[i + 1])
@@ -173,6 +197,7 @@ class Transformer(torch.nn.Module):
 
         self.depth = depth
         self.heads = heads
+        self.mlp_dims = mlp_dims
         self.voc_size = voc_size
         self.embedding = torch.nn.Embedding(voc_size, embedding_size)
         # self.position_encoder = PositionEncoder()
@@ -183,13 +208,14 @@ class Transformer(torch.nn.Module):
             for layer in range(depth)
         ]
         if mlp_dims is not None:
-            mlps = [ResidualMLP(embedding_size, *mlp_dims) for _ in range(depth)]
+            mlps = [ResidualMLP(embedding_size, *mlp_dims, layer=layer)
+                for layer in range(depth)]
             # Interleave heads and mlps
             blocks = [block for layer in zip(heads, mlps) for block in layer]
         else:
             blocks = heads
 
-        self.blocks = torch.nn.ModuleList(blocks)
+        self.blocks = torch.nn.Sequential(*blocks)
         self.unembedding = torch.nn.Parameter(torch.rand(embedding_size, voc_size))
 
     def forward(self, x: TensorType['batch', 'token']) -> List[str]:
@@ -376,7 +402,7 @@ def mkexo(name: str, voc: str, input_len: int) -> Exercise:
 # Help for visualizing the model #
 # ------------------------------ #
 
-DEBUG = set(("",))  # debug everythin
+DEBUG = set()  # debug nothing
 EllipsisType = type(...)
 DEBUG_CALLBACK = None
 
@@ -485,62 +511,81 @@ def show_model(model: torch.nn.Module) -> None:
 
     plt.tight_layout()
 
-def show_transformer(model: Transformer) -> None:
-    height = (model.heads + 1) * model.depth + 2
+def show_transformer(model: Transformer, scale=4) -> None:
+    heads = (model.heads + 1) * model.depth
+    mlps_size = model.depth * 2 if len(model.blocks) != model.depth else 0
+    height = heads + mlps_size + 2
 
-    def imshow(x, line, col, name: str):
-        # plt.subplot(height, 3, line * 3 + col + 1)
-        plt.subplot(3, height, col * height + line + 1)
-        plt.imshow(x.detach().numpy())
-        plt.colorbar()
-        plt.title(name)
-
-
-    imshow(model.embedding.weight, 0, 1, "Embedding")
-    for l, layer in enumerate(model.blocks):
-        head: AttentionHead
-        for h, head in enumerate(layer.heads):
-            imshow(head.queries, l * (model.heads + 1) + h + 1, 0, f"Layer {l} Head {h} Q")
-            imshow(head.keys,    l * (model.heads + 1) + h + 1, 1, f"Layer {l} Head {h} K")
-            imshow(head.values,  l * (model.heads + 1) + h + 1, 2, f"Layer {l} Head {h} V")
-        imshow(layer.weight, l * (model.heads + 1) + model.heads + 1, 0, f"Layer {l} Weight")
-    imshow(model.unembedding, height - 1, 1, "Unembedding")
-
-    plt.tight_layout()
+    # plt.figure(figsize=(height * 2, 3 * 2))
+    fig, axes = plt.subplots(3, height, figsize=(height * scale, 3 * scale))
+    axes = axes.T
+    show_matrix(model.embedding.weight, axes[0, 1], "Embedding")
+    show_matrix(model.position_encoder, axes[0, 2], "Position encoder")
+    line = 1
+    for b, block in enumerate(model.blocks):
+        if isinstance(block, MultiAttentionHead):
+            for h, head in enumerate(block.heads):
+                show_matrix(head.queries, axes[line, 0], f"Layer {head.layer} Head {h} Q")
+                show_matrix(head.keys, axes[line, 1], f"Layer {head.layer} Head {h} K")
+                show_matrix(head.values, axes[line, 2], f"Layer {head.layer} Head {h} V")
+                line += 1
+            show_matrix(block.weight, axes[line, 1], f"Layer {b} Weight")
+            line += 1
+        elif isinstance(block, ResidualMLP):
+            for i, layer in enumerate(block.layers):
+                show_matrix(layer.weight, axes[line, i], f"Layer {b} MLP layer {i}")
+                axes[line + 1, i].stem(layer.bias.detach().numpy())
+                axes[line + 1, i].set_title(f"Layer {b} MLP bias {i}")
+            line += 2
+    show_matrix(model.unembedding, axes[line, 1], "Unembedding")
 
 
 def show_activations(model: Transformer, input_: TensorType['token']) -> None:
+    assert len(input_.shape) == 2 and input_.shape[0] == 1, "show_activations only works with a single input"
+
     activations = []
     def store_activations(value: TensorType, *name: Union[str, int]):
         activations.append((' '.join(map(str, name)), value))
 
-    with temp_debug((), callback=store_activations):
-        model(input_)
+    with torch.no_grad():
+        with temp_debug((), callback=store_activations):
+            model(input_)
 
-    param_count = len(activations)
-    width = math.ceil(math.sqrt(param_count))
-    height = math.ceil(param_count / width)
+        param_count = len(activations)
+        width = math.ceil(math.sqrt(param_count))
+        height = math.ceil(param_count / width)
 
-    fig, axes = plt.subplots(height, width)
+        fig, axes = plt.subplots(height, width, figsize=(width * 4, height * 4))
 
-    for i, (name, param) in enumerate(activations):
-        plt.subplot(height, width, i + 1)
-        param.squeeze_(0)
-        ax = axes[i // width, i % width]
-        if param.ndim == 1:
-            ax.stem(param.detach().numpy())
-        else:
-            im = ax.imshow(param.detach().numpy())
-            for i in range(param.shape[0]):
-                for j in range(param.shape[1]):
-                    value = param[i, j].item()
-                    if abs(value) > 0.01:
-                        ax.text(j, i, f"{param[i, j]:.1f}", ha="center", va="center", color="w")
-            # im.colorbar()  # Show scale
-        plt.title(name)
+        for i, (name, param) in enumerate(activations):
+            # plt.subplot(height, width, i + 1)
+            param.squeeze_(0)
+            ax = axes[i // width, i % width]
+            if param.ndim == 1:
+                ax.stem(param.detach().numpy())
+                ax.set_title(name)
+            else:
+                show_matrix(param, ax, name)
 
-    plt.tight_layout()
 
+def show_matrix(x, axis, title: str):
+    x = x.detach().numpy()
+    im = axis.imshow(x)
+    colors = im.cmap(im.norm(x))
+
+    for i in range(x.shape[0]):
+        for j in range(x.shape[1]):
+            value = x[i, j].item()
+            if abs(value - int(value)) < 0.01:
+                text = str(int(value))
+            else:
+                text = f"{value:.1f}"
+
+            if text != "0":
+                color = 'white' if colors[i, j, :4].mean() < 0.5 else 'black'
+                axis.text(j, i, text, ha="center", va="center", color=color)
+    # plt.colorbar()
+    axis.set_title(title)
 
 
 ##########################
@@ -563,3 +608,67 @@ def cat(*args: Union[torch.TensorType, list]):
 
 
     return torch.cat(parts, dim=0)
+
+
+def pad(x, width=None, height=None, left=0, top=0):
+    """Add zeros arounds a 2D tensor so that its size is [bottom, right]
+    and its top-left corner is at [top, left]."""
+    if isinstance(x, list):
+        x = torch.tensor(x)
+    if width is None:
+        width = x.shape[1]
+    if height is None:
+        height = x.shape[0]
+
+    x = cat(torch.zeros(top, width), [
+        torch.zeros(x.shape[0], left), x,
+        torch.zeros(x.shape[0], width - left - x.shape[1])
+    ], torch.zeros(height - top - x.shape[0], width))
+    return x
+
+
+def copy(in_dims: List[int], out_dims: List[int], shape: Tuple[int, int]):
+    """
+    Create a matrix that moves the values of the input dims to the output dims
+    when applied on the right of a vector (input * Matric => permuted).
+    """
+
+    assert len(in_dims) == len(out_dims)
+
+    matrix = torch.zeros(*shape)
+    for in_dim, out_dim in zip(in_dims, out_dims):
+        matrix[in_dim, out_dim] = 1
+    return matrix
+
+
+def select(dims: List[int], value: List[int], shape=Tuple[int, int], scale=10):
+    """
+    Create a keys and a queries matrix that selects vectors with higher dot
+    product with the value vector.
+    This assumes that that the average values of every token in the [dims]
+    is higher than zero. If not, the scale parameter needs to be negative.
+    """
+    assert len(dims) == len(value)
+
+    keys = torch.zeros(*shape)
+    keys[dims, 0] = torch.tensor(value, dtype=keys.dtype)
+
+    queries = torch.zeros(*shape)
+    queries[dims, 0] = scale
+
+    return keys, queries
+
+
+def attend_abs_position(dims: List[int],
+                        permutation: List[int],
+                        scale=10,
+                        shape=Tuple[int, int]):
+    """
+    Create a keys and queries matrix that selects token at the position in the permutation.
+    """
+    assert len(dims) == len(permutation)
+    keys = torch.zeros(*shape)
+    keys[dims, list(range(len(dims)))] = scale
+    queries = torch.zeros(*shape)
+    queries[dims, permutation] = 1
+    return keys, queries

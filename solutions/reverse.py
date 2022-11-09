@@ -105,6 +105,79 @@ def reverse():
     return model
 
 
+def reverse_better():
+    HEADS = 1
+    INNER_SIZE = EMBED_SIZE
+    embedding = cat(O(1, EMBED_SIZE),
+                    [I(4), O(4, EMBED_SIZE - 4)])
+    unembedding = embedding.T
+    pos_encoder = torch.cat((O(8, 4), I(8), O(8, 8)), dim=1)
+
+    # This head finds the position of the | character and outputs it in the 8 first dims
+    layer_0_head_0_q = cat(
+        [F((4, 4), 1.0), O(4, INNER_SIZE - 4)],
+        O(EMBED_SIZE - 4, INNER_SIZE)
+    )
+    layer_0_head_0_k = O(EMBED_SIZE, INNER_SIZE)
+    layer_0_head_0_k[3, 0] = 100  # Find the |, which is embedded as [0, 0, 0, 1]
+    layer_0_head_0_v = cat(
+        O(4, INNER_SIZE),
+        [I(8), O(8, INNER_SIZE - 8)],
+        O(8, INNER_SIZE),
+    )
+    layer_0_head_0 = (layer_0_head_0_q, layer_0_head_0_k, layer_0_head_0_v)
+
+    # This head just outputs the current position in it last 8 dims
+
+    layer_0_heads = [layer_0_head_0]
+    # Computes p(|) - d(|, current) by comparing the outputs
+    # of the two heads.
+    # Outputs a vector in the working space whose highest component
+    # is the position of the token to replicate.
+    layer_0_weight = cat(
+        [O(8, EMBED_SIZE - 8), tensor([
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0],
+        ])],
+        O(4 + 8, EMBED_SIZE)
+    )
+    layer_0 = (layer_0_heads, layer_0_weight)
+
+    layer_1_head_0 = (
+        cat(  # Keys
+            O(4, INNER_SIZE),
+            O(8, INNER_SIZE),
+            [O(8, 2), I(8), O(8, INNER_SIZE - 10)],
+        ),
+        cat(  # Queries
+            O(4, INNER_SIZE),
+            [O(8, 2), I(8), O(8, INNER_SIZE - 10)],
+            O(8, INNER_SIZE),
+        ) * 100,
+        cat(  # Values
+            [I(4), O(4, INNER_SIZE - 4)],
+            O(8 + 8, INNER_SIZE),
+        )
+    )
+
+    layer_1_heads = [layer_1_head_0]
+    layer_1_weight = I(EMBED_SIZE) * 10
+    layer_1 = (layer_1_heads, layer_1_weight)
+
+    layers = [layer_0, layer_1]
+
+
+    model = EXO.mk_model(DEPTH, HEADS, INNER_SIZE, embedding, unembedding, pos_encoder, layers)
+    return model
+
+
+
 if __name__ == "__main__":
     model = reverse()
     show_transformer(model)

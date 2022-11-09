@@ -1,4 +1,3 @@
-from asyncio import trsock
 import torch
 from torch import Tensor, tensor
 from exos import EXOS, set_debug

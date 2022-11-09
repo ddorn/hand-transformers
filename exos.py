@@ -56,6 +56,12 @@ def difference():
     a, b = random.choices("01", k=2)
     return a + b, "01"[a != b]
 
+@mkexo(name="IfThenElse", voc="01", input_len=3)
+def if_then_else():
+    """Input: XYZ. Complete by Y if X == 1 otherwise by Z."""
+    s = "".join(random.choices("01", k=3))
+    return s, s[1 + (s[0] == '0')]
+
 
 @mkexo(name="AllTheSame", voc="012", input_len=3)
 def all_the_same():
@@ -137,7 +143,7 @@ def fixed_addition(base: int, length: int):
         return s, to_base(a + b, base)[-1]
     else:
         d = random.randrange(0, length)
-        return s + to_base(d), to_base(a + b, base).ljust(length+1, "0")[d+1]
+        return s + to_base(d, base), to_base(a + b, base).ljust(length+1, "0")[d+1]
 
 
 @mkexo(name="AddFixedBase2Mod4", voc="01", input_len=5)
