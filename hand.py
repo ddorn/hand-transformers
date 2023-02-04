@@ -1,8 +1,8 @@
 from contextlib import contextmanager
-from distutils.log import debug
+from copy import deepcopy
 import math
 from textwrap import dedent
-from typing import Callable, List, Optional, Tuple, Type, Union
+from typing import Callable, List, Optional, Tuple, Type, Union, Set
 
 import einops
 import matplotlib.pyplot as plt
@@ -325,7 +325,8 @@ Examples:
     @typechecked
     def test(self,
              model: torch.nn.Module,
-             nb_tests: int = 100) -> Tuple[float, float]:
+             nb_tests: int = 100,
+             verbose: bool = True) -> Tuple[float, float]:
 
         xs, ys = self.generate(nb_tests)
         xs_enc = self.tokenizer.encode(xs)
@@ -337,17 +338,18 @@ Examples:
         correct = (pred_enc.argmax(dim=-1) == ys_enc).sum().item()
 
         # Show first 10 predictions
-        pred = self.tokenizer.decode(pred_enc.argmax(dim=-1).unsqueeze(-1))
-        xs_width = max(len(x) for x in xs)
-        for i in range(10):
-            expected = "EXPECTED " + ys[i] if ys[i] != pred[i] else "        "
-            token_probs = [
-                f"{char if char.strip() else repr(char)}: {proba:.2f}"
-                for char, proba in zip(self.voc, pred_enc[i].detach().numpy())
-            ]
-            token_probs = '  '.join(token_probs)
-            print(f"{xs[i]:>{xs_width}} → {pred[i]} {expected}\t{token_probs}")
-        print(f"Loss: {loss:.2f}  Accuracy: {correct} / {nb_tests}")
+        if verbose:
+            pred = self.tokenizer.decode(pred_enc.argmax(dim=-1).unsqueeze(-1))
+            xs_width = max(len(x) for x in xs)
+            for i in range(10):
+                expected = "EXPECTED " + ys[i] if ys[i] != pred[i] else "        "
+                token_probs = [
+                    f"{char if char.strip() else repr(char)}: {proba:.2f}"
+                    for char, proba in zip(self.voc, pred_enc[i].detach().numpy())
+                ]
+                token_probs = '  '.join(token_probs)
+                print(f"{xs[i]:>{xs_width}} → {pred[i]} {expected}\t{token_probs}")
+            print(f"Loss: {loss:.2f}  Accuracy: {correct} / {nb_tests}")
 
         return correct, loss
 
@@ -389,6 +391,15 @@ Examples:
         template = dedent(template)
 
         return template
+
+    def mistakes(self, model: Transformer, tries: int=100) -> Set[Tuple[str, str, str]]:
+        """Return a set of (input, expected, predicted) tuples that the model gets wrong."""
+
+        xs, ys = self.generate(tries)
+        xs_enc = self.tokenizer.encode(xs)
+        pred_enc = model(xs_enc)
+        pred = self.tokenizer.decode(pred_enc.argmax(dim=-1).unsqueeze(-1))
+        return set((x, y, p) for x, y, p in zip(xs, ys, pred) if y != p)
 
 
 def mkexo(name: str, voc: str, input_len: int) -> Exercise:
@@ -489,6 +500,14 @@ def pprint_2d_tensor(t: TensorType):
             print(f"{color(v)}{v:{width}.1f}", end=' ')
         print("\033[0m")
 
+
+def model_diff(model1: Transformer, model2: Transformer) -> None:
+    """Return a model whose parameters are the difference between the two models."""
+
+    model = deepcopy(model1)
+    for p1, p2 in zip(model.parameters(), model2.parameters()):
+        p1.data = p2.data - p1.data
+    return model
 
 
 def show_model(model: torch.nn.Module) -> None:
@@ -672,3 +691,26 @@ def attend_abs_position(dims: List[int],
     queries = torch.zeros(*shape)
     queries[dims, permutation] = 1
     return keys, queries
+
+
+##########################
+#    Modifying models    #
+##########################
+
+
+def perturb(model, noise_strengh: float, prop: bool = True):
+    """Modify the weight of a model in place by adding a random noise.
+
+    Args:
+        model: The model to modify.
+        noise_strengh: The standard deviation of the noise.
+        prop: If True, the noise is proportional to the weight.
+    """
+    with torch.no_grad():
+        for p in model.parameters():
+            perturbation = torch.randn_like(p)
+            if prop:
+                p += noise_strengh * perturbation * p.abs()
+            else:
+                p += noise_strengh * perturbation
+    return model
