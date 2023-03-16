@@ -1,9 +1,12 @@
 import random
 from typing import Dict, List
 from torch import Tensor
-from hand import Exercise, mkexo, set_debug
+from hand import Exercise, set_debug
 
 __all__ = ['EXOS', 'set_debug']
+
+def mkexo(*args, **kwargs):
+    return None
 
 # Solved. Trivial.
 @mkexo(name="LastChar", voc="abc", input_len=3)

@@ -1,20 +1,28 @@
+from __future__ import annotations
+
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import dataclass
+from functools import cached_property
 import math
+import random
 from textwrap import dedent
-from typing import Callable, List, Optional, Tuple, Type, Union, Set
+from typing import Callable, List, Optional, Tuple, Type, Union, Set, Dict
 
 import einops
 import matplotlib.pyplot as plt
-import numpy
+import numpy as np
 import torch
 from torchtyping import TensorType, patch_typeguard
+from tqdm import tqdm
 from typeguard import typechecked
+
+TT = TensorType
 
 patch_typeguard()
 
 # ------------------------- #
-# Reimplementation of GPT-2 #
+# Reimplementation of GPT #
 # ------------------------- #
 
 class CharTokenizer:
@@ -59,31 +67,13 @@ class CharTokenizer:
         ]
 
 
-class PositionEncoder(torch.nn.Module):  # Not used
-    """A positional encoder that adds (co)sinusoidal frequencies to the input."""
-
-    @typechecked
-    def forward(
-        self, x: TensorType['batch', 'tokens', 'embedding_size']
-    ) -> TensorType['batch', 'tokens', 'embedding_size']:
-        tokens, embedding_size = x.shape[1], x.shape[2]
-        assert embedding_size % 2 == 0, "embedding size must be even."
-
-        pe = torch.zeros(tokens, embedding_size)
-        positions = torch.arange(0, tokens)
-        scales = (1 / 10000)**(torch.arange(0, embedding_size // 2) /
-                               embedding_size)
-        coeffs = torch.einsum("i,j->ij", positions, scales)
-        sins = torch.sin(coeffs)
-        coss = torch.cos(coeffs)
-        pos_encoding = einops.rearrange(
-            torch.stack([sins, coss]), "type tokens emb -> tokens (emb type)")
-        return x + pos_encoding
-
-
 class AttentionHead(torch.nn.Module):
 
-    def __init__(self, embedding_size: int, out_size: int, layer:int=None, n:int=None) -> None:
+    def __init__(self,
+                 embedding_size: int,
+                 out_size: int,
+                 layer: int = None,
+                 n: int = None) -> None:
         """A single attention head.
 
         Args:
@@ -97,7 +87,8 @@ class AttentionHead(torch.nn.Module):
         self.layer = layer
         self.n = n
 
-        self.queries = torch.nn.Parameter(torch.randn(embedding_size, out_size))
+        self.queries = torch.nn.Parameter(torch.randn(embedding_size,
+                                                      out_size))
         self.keys = torch.nn.Parameter(torch.randn(embedding_size, out_size))
         self.values = torch.nn.Parameter(torch.randn(embedding_size, out_size))
 
@@ -136,16 +127,22 @@ class AttentionHead(torch.nn.Module):
 
 class MultiAttentionHead(torch.nn.Module):
 
-    def __init__(self, embedding_size: int, heads: int, layer:int=None) -> None:
+    def __init__(self,
+                 embedding_size: int,
+                 heads: int,
+                 layer: int = None) -> None:
         assert embedding_size % heads == 0, "embedding size must be divisible by heads."
         super().__init__()
         self.layer = layer
 
         out_size = embedding_size // heads
 
-        self.heads = torch.nn.ModuleList(
-            [AttentionHead(embedding_size, out_size, layer=layer, n=n) for n in range(heads)])
-        self.weight = torch.nn.Parameter(torch.randn(embedding_size, embedding_size))
+        self.heads = torch.nn.ModuleList([
+            AttentionHead(embedding_size, out_size, layer=layer, n=n)
+            for n in range(heads)
+        ])
+        self.weight = torch.nn.Parameter(
+            torch.randn(embedding_size, embedding_size))
 
     def forward(self, x: TensorType['b', 't',
                                     'emb']) -> TensorType['b', 't', 'out']:
@@ -159,7 +156,11 @@ class MultiAttentionHead(torch.nn.Module):
 
 
 class ResidualMLP(torch.nn.Module):
-    def __init__(self, embeding_size: int, *layers_dims: int, layer:int=None) -> None:
+
+    def __init__(self,
+                 embeding_size: int,
+                 *layers_dims: int,
+                 layer: int = None) -> None:
         """An MLP with residual a connection.
 
         Args:
@@ -176,7 +177,9 @@ class ResidualMLP(torch.nn.Module):
             for i in range(len(dims) - 1)
         ])
 
-    def forward(self, x: TensorType['batch', 'tokens', 'embedding_size']) -> TensorType['batch', 'tokens', 'embedding_size']:
+    def forward(
+        self, x: TensorType['batch', 'tokens', 'embedding_size']
+    ) -> TensorType['batch', 'tokens', 'embedding_size']:
         initial = x
         for l, layer in enumerate(self.layers):
             x = layer(x)
@@ -186,6 +189,39 @@ class ResidualMLP(torch.nn.Module):
 
         x = x + initial
         debug(x, self.layer, "mlp", "residual")
+        return x
+
+
+class TransformerBlock(torch.nn.Module):
+
+    def __init__(self,
+                 embedding_size: int,
+                 heads: int,
+                 mlp_dims: Optional[Tuple[int, ...]] = None,
+                 layer: int = None) -> None:
+        """A single transformer block.
+
+        Args:
+            embedding_size (int): The size of the input and output embedding.
+            heads (int): The number of attention heads.
+            mlp_dims (Optional[Tuple[int, ...]]): The dimensions of the hidden layers in the MLP.
+            layer (int): The layer number, for debugging purposes.
+        """
+        super().__init__()
+        self.layer = layer
+
+        self.attention = MultiAttentionHead(embedding_size, heads, layer=layer)
+        if mlp_dims is not None:
+            self.mlp = ResidualMLP(embedding_size, *mlp_dims, layer=layer)
+        else:
+            self.mlp = None
+
+    def forward(
+        self, x: TensorType['batch', 'tokens', 'embedding_size']
+    ) -> TensorType['batch', 'tokens', 'embedding_size']:
+        x = self.attention(x)
+        if self.mlp is not None:
+            x = self.mlp(x)
         return x
 
 class Transformer(torch.nn.Module):
@@ -200,25 +236,15 @@ class Transformer(torch.nn.Module):
         self.mlp_dims = mlp_dims
         self.voc_size = voc_size
         self.embedding = torch.nn.Embedding(voc_size, embedding_size)
-        # self.position_encoder = PositionEncoder()
         self.position_encoder = pos_encoder
-
-        heads = [
-            MultiAttentionHead(embedding_size, heads, layer=layer)
-            for layer in range(depth)
-        ]
-        if mlp_dims is not None:
-            mlps = [ResidualMLP(embedding_size, *mlp_dims, layer=layer)
-                for layer in range(depth)]
-            # Interleave heads and mlps
-            blocks = [block for layer in zip(heads, mlps) for block in layer]
-        else:
-            blocks = heads
-
-        self.blocks = torch.nn.Sequential(*blocks)
+        self.blocks = torch.nn.Sequential(*[
+            TransformerBlock(embedding_size, heads, mlp_dims, layer=i)
+            for i in range(depth)
+        ])
         self.unembedding = torch.nn.Parameter(torch.rand(embedding_size, voc_size))
 
     def forward(self, x: TensorType['batch', 'token']) -> List[str]:
+        debug(x, "input")
         embeded = self.embedding(x)
         debug(embeded, "embeded")
         # with_pos = self.position_encoder(embeded)
@@ -228,6 +254,7 @@ class Transformer(torch.nn.Module):
         out = x[:, -1, :].squeeze(1)  # only the last token is the prediction
         unembeded = out @ self.unembedding
         debug(unembeded, "unembeded")
+        return unembeded
         probas = torch.softmax(unembeded, dim=-1)
         debug(probas, "probas")
         return probas
@@ -236,6 +263,123 @@ class Transformer(torch.nn.Module):
 # ----------------------- #
 # Framework for exercises #
 # ----------------------- #
+
+
+@dataclass
+class Task:
+    """A task is a finite set of prompts and 1-char answers."""
+    prompts: List[str]
+    answers: List[str]
+
+    @classmethod
+    def from_texts(cls, texts: List[str]) -> Task:
+        """Create a task from a list of texts.
+
+        Args:
+            texts (List[str]): A list of texts, each text is a concatenation of prompts and answers.
+
+        Returns:
+            Task: A task with the prompts and answers.
+        """
+        prompts = []
+        answers = []
+        for text in texts:
+            prompts.append(text[:-1])
+            answers.append(text[-1])
+        return cls(prompts, answers)
+
+    @cached_property
+    def tokens(self) -> List[str]:
+        return list(sorted(set(''.join(self.prompts + self.answers))))
+
+    @cached_property
+    def max_prompt_len(self) -> int:
+        return max(len(prompt) for prompt in self.prompts)
+
+    @cached_property
+    def char_to_token(self) -> Dict[str, int]:
+        return {char: i for i, char in enumerate(self.tokens)}
+
+    @cached_property
+    def tokenized_prompts(self) -> TT['prompt', 'token', int]:
+        assert all(
+            len(prompt) == self.max_prompt_len for prompt in self.prompts)
+
+        return self.encode(self.prompts)
+
+    @cached_property
+    def tokenized_answers(self) -> TT['prompt', 'token', int]:
+        return self.encode(self.answers)
+
+    def encode(self, prompts: List[str]) -> TT['prompt', 'token', int]:
+        return torch.tensor([[self.char_to_token[char] for char in prompt]
+                             for prompt in prompts])
+
+    def decode(self, tokens: TT['prompt', 'token', int]) -> List[str]:
+        if tokens.ndim == 1:
+            return [self.tokens[token] for token in tokens]
+        return [
+            ''.join(self.tokens[token] for token in prompt)
+            for prompt in tokens
+        ]
+
+    def test(self, model: Transformer, verbose: int = 0) -> float:
+        """Test the model on this task.
+
+        Args:
+            model (Transformer): The model to test.
+            verbose (int):
+                0: No output.
+                1: Print the prompts and answers that are wrong.
+                2: Print all prompts and answers.
+                3: Print the prompts and answers that are wrong, and the probas.
+
+        Returns:
+            float: The accuracy of the model on this task.
+        """
+        with torch.no_grad():
+            probas = model(self.tokenized_prompts)
+            predictions = torch.argmax(probas, dim=-1)
+            predictions = self.decode(predictions)
+
+            for prompt, answer, prediction in zip(self.prompts, self.answers,
+                                                  predictions):
+                if verbose == 2 or (verbose == 1 and answer != prediction):
+                    print(f"{prompt} → {answer} ({prediction})")
+                elif verbose == 3:
+                    pass
+
+
+            return sum(1
+                       for answer, prediction in zip(self.answers, predictions)
+                       if answer == prediction) / len(self.answers)
+
+    def loss(self, model: Transformer) -> float:
+        """Compute the loss of the model on this task.
+
+        Args:
+            model (Transformer): The model to test.
+
+        Returns:
+            TensorType['batch']: The loss of the model on this task.
+        """
+        probas = model(self.tokenized_prompts)
+        return torch.nn.functional.cross_entropy(probas, self.tokenized_answers.squeeze(1)).item()
+
+    def __str__(self) -> str:
+        s = f"{self.__class__.__name__}({len(self.prompts)} prompts)"
+        if len(self.prompts) <= 10:
+            examples = range(len(self.prompts))
+        else:
+            examples = random.sample(range(len(self.prompts)), 10)
+
+        for i in examples:
+            s += f"\n  {self.prompts[i]} → {self.answers[i]}"
+
+        # Add tokens with their IDs
+        s += f"\nTokens: {self.tokens}"
+        return s
+
 
 class Exercise:
 
@@ -246,82 +390,6 @@ class Exercise:
         self.description = generator.__doc__
         self.name = name
 
-    def __repr__(self) -> str:
-        examples = [self.generator() for _ in range(5)]
-        max_len = max(len(example[0]) for example in examples)
-        examples = [
-            f"  {example[0]:>{max_len}} → {example[1]}"
-            for example in examples
-        ]
-        examples = '\n'.join(examples)
-
-        voc = [
-            f"{idx}: {char if char.strip() else repr(char)}"
-            for idx, char in enumerate(self.tokenizer.vocab)
-        ]
-        voc = '  '.join(voc)
-
-        return f"""{self.name}
-{self.description}
-
-Alphabet: {voc}
-Input length: {self.tokenizer.max_len}
-Examples:
-{examples}"""
-
-    @property
-    def voc(self) -> List[str]:
-        return self.tokenizer.vocab
-
-    @property
-    def vocab_size(self) -> int:
-        return self.tokenizer.vocab_size
-
-    def generate(self, n: int) -> Tuple[List[str], List[str]]:
-        """Generate n inputs and expected outputs."""
-        xs, ys = zip(*[self.generator() for _ in range(n)])
-        return list(xs), list(ys)
-
-    @typechecked
-    def mk_model(
-        self,
-        depth: int,
-        heads: int,
-        inner_size: int,
-        embedding: TensorType['voc', 'embedding_size'],
-        unembedding: TensorType['embedding_size', 'voc'],
-        position_encoder: TensorType['max_len', 'embedding_size'],
-        layers: List[Tuple[List[Tuple[TensorType['token', 'inner'],  # Q
-                                      TensorType['token', 'inner'],  # K
-                                      TensorType['token', 'inner'],  # V
-                                      ],  # per head
-                                ], TensorType['embedding',
-                                              'embedding'],  # W per layer
-                           # Feed forward ? norm ?
-                           ]],
-    ) -> Transformer:
-        """Create a model with the given parameters. MLP not supported."""
-
-        # This method was supposed to make it easier to build models
-        # for the hackaton, but I don't think it useful for my tinkering.
-
-        # Shorthand
-        p = lambda x: torch.nn.Parameter(x, requires_grad=False)
-
-        model = Transformer(self.tokenizer.vocab_size,
-                                         inner_size * heads, depth, heads, position_encoder)
-        model.embedding.weight = p(embedding)
-        model.unembedding = p(unembedding)
-
-        for i, (heads, weight) in enumerate(layers):
-            for j, (q, k, v) in enumerate(heads):
-                model.blocks[i].heads[j].queries = p(q)
-                model.blocks[i].heads[j].keys = p(k)
-                model.blocks[i].heads[j].values = p(v)
-            model.blocks[i].weight = p(weight)
-
-        return model
-
     @typechecked
     def test(self,
              model: torch.nn.Module,
@@ -329,6 +397,11 @@ Examples:
              verbose: bool = True) -> Tuple[float, float]:
 
         xs, ys = self.generate(nb_tests)
+        # make each input unique
+        prompts = {x: y for x, y in zip(xs, ys)}
+        xs, ys = map(list, zip(*prompts.items()))
+        nb_tests = len(xs)
+
         xs_enc = self.tokenizer.encode(xs)
         ys_enc = self.tokenizer.encode(ys, pad=False)[:, -1]
 
@@ -341,73 +414,83 @@ Examples:
         if verbose:
             pred = self.tokenizer.decode(pred_enc.argmax(dim=-1).unsqueeze(-1))
             xs_width = max(len(x) for x in xs)
-            for i in range(10):
-                expected = "EXPECTED " + ys[i] if ys[i] != pred[i] else "        "
+            for i in range(min(10, nb_tests)):
+                expected = "EXPECTED " + ys[i] if ys[i] != pred[
+                    i] else "        "
                 token_probs = [
-                    f"{char if char.strip() else repr(char)}: {proba:.2f}"
-                    for char, proba in zip(self.voc, pred_enc[i].detach().numpy())
+                    f"{char if char.strip() else repr(char)}: {proba:.2f}" for
+                    char, proba in zip(self.voc, pred_enc[i].detach().numpy())
                 ]
                 token_probs = '  '.join(token_probs)
-                print(f"{xs[i]:>{xs_width}} → {pred[i]} {expected}\t{token_probs}")
+                print(
+                    f"{xs[i]:>{xs_width}} → {pred[i]} {expected}\t{token_probs}"
+                )
             print(f"Loss: {loss:.2f}  Accuracy: {correct} / {nb_tests}")
 
         return correct, loss
 
-    def print_template(self,
-                       depth: int,
-                       heads: int,
-                       inner_size: int,
-                       default: str = "0.0") -> None:
-        voc_size = self.vocab_size
-        emb = inner_size * heads
 
-        def mk_matrix(h: int, w: int) -> str:
-            nl = "\n" + 12 * " "
-            return f"Tensor([{nl}[" + f"],{nl}[".join(
-                ", ".join(default for _ in range(w)) for _ in range(h)) + "]])"
+# ------------------------------ #
+#       Training functions       #
+# ------------------------------ #
 
 
-        template = f"""
-        embedding = {mk_matrix(voc_size, emb)}
-        unembedding = {mk_matrix(emb, voc_size)}
-        pos_encoder = {mk_matrix(self.tokenizer.max_len, emb)}
-        """
-        for d in range(depth):
-            for h in range(heads):
-                template += f"""
-        layer_{d}_head_{h}_q = {mk_matrix(emb, inner_size)}
-        layer_{d}_head_{h}_k = {mk_matrix(emb, inner_size)}
-        layer_{d}_head_{h}_v = {mk_matrix(emb, inner_size)}
-        layer_{d}_head_{h} = (layer_{d}_head_{h}_q, layer_{d}_head_{h}_k, layer_{d}_head_{h}_v)
-        """
-            template += f"""
-        layer_{d}_heads = [""" + ", ".join(f"layer_{d}_head_{h}" for h in range(heads)) + f"""]
-        layer_{d}_weight = {mk_matrix(emb, emb)}
-        layer_{d} = (layer_{d}_heads, layer_{d}_weight)
-        """
-        template += f"""
-        layers = [""" + ", ".join(f"layer_{d}" for d in range(depth)) + "]"
+@dataclass
+class Perfs:
+    """A class to store the performance of a model during training."""
+    loss: List[float]
+    accuracy: Optional[List[float]] = None
+    models: Optional[List[Transformer]] = None
 
-        template = dedent(template)
-
-        return template
-
-    def mistakes(self, model: Transformer, tries: int=100) -> Set[Tuple[str, str, str]]:
-        """Return a set of (input, expected, predicted) tuples that the model gets wrong."""
-
-        xs, ys = self.generate(tries)
-        xs_enc = self.tokenizer.encode(xs)
-        pred_enc = model(xs_enc)
-        pred = self.tokenizer.decode(pred_enc.argmax(dim=-1).unsqueeze(-1))
-        return set((x, y, p) for x, y, p in zip(xs, ys, pred) if y != p)
+    def update(self, lost, model: Transformer, task: Task):
+        self.loss.append(lost.item())
+        if self.accuracy is not None:
+            accuracy = task.test(model)
+            self.accuracy.append(accuracy)
+        if self.models is not None:
+            self.models.append(deepcopy(model))
 
 
-def mkexo(name: str, voc: str, input_len: int) -> Exercise:
 
-    def decorator(f: Callable[[], Tuple[str, str]]) -> Exercise:
-        return Exercise(name, CharTokenizer(voc, input_len), f)
+    def plot_loss(self):
+        plt.plot(self.loss)
 
-    return decorator
+    def plot_accuracy(self):
+        plt.plot(self.accuracy)
+
+
+def train(
+    model: Transformer,
+    task: Task,
+    epochs=1,
+    optimizer=None,
+    perfs: Optional[Perfs] = None,
+):
+
+    loss = torch.nn.CrossEntropyLoss()
+    if optimizer is None:
+        optimizer = torch.optim.SGD(model.parameters(),
+                                    lr=0.01,
+                                    weight_decay=0.001)
+
+    if perfs is None:
+        perfs = Perfs([])
+
+    for epoch in range(epochs):
+        optimizer.zero_grad()
+        preds = model(task.tokenized_prompts)
+        lost = loss(preds, task.tokenized_answers.squeeze())
+        lost.backward()
+        optimizer.step()
+
+        # Update metrics
+        perfs.update(lost, model, task)
+
+        # if epoch % (epochs // 10) == (epochs // 10) - 1 or epoch == 0:
+        #     print(f"Epoch {epoch+1} loss: {lost}")
+
+    return perfs
+
 
 # ------------------------------ #
 # Help for visualizing the model #
@@ -416,6 +499,7 @@ def mkexo(name: str, voc: str, input_len: int) -> Exercise:
 DEBUG = set()  # debug nothing
 EllipsisType = type(...)
 DEBUG_CALLBACK = None
+
 
 def debug(value: TensorType, *name: Union[str, int]) -> None:
     for pattern in DEBUG:
@@ -433,7 +517,8 @@ def debug(value: TensorType, *name: Union[str, int]) -> None:
             return
 
 
-def set_debug(*args: Union[str, List[Union[str, int, EllipsisType]]], callback=None) -> None:
+def set_debug(*args: Union[str, List[Union[str, int, EllipsisType]]],
+              callback=None) -> None:
     """Print matrices whose name correspond to the pattern
 
     Examples:
@@ -447,14 +532,16 @@ def set_debug(*args: Union[str, List[Union[str, int, EllipsisType]]], callback=N
     Optionnally, a callback can be provided to perfom an action instead of printing.
     """
 
-    args = [a if isinstance(a, tuple) else (a,) for a in args]
+    args = [a if isinstance(a, tuple) else (a, ) for a in args]
     DEBUG.clear()
     DEBUG.update(args)
     global DEBUG_CALLBACK
     DEBUG_CALLBACK = callback
 
+
 @contextmanager
-def temp_debug(*args: Union[str, List[Union[str, int, EllipsisType]]], callback) -> None:
+def temp_debug(*args: Union[str, List[Union[str, int, EllipsisType]]],
+               callback) -> None:
     """Same as set_debug but only for the duration of the context."""
     old_debug = DEBUG.copy()
     old_callback = DEBUG_CALLBACK
@@ -470,6 +557,7 @@ def chrange(x, start_range, target_range, flip=False):
     if flip:
         normalised = 1 - normalised
     return normalised * (target_range[1] - target_range[0]) + target_range[0]
+
 
 def pprint_2d_tensor(t: TensorType):
     if t.dim() == 3:
@@ -530,6 +618,7 @@ def show_model(model: torch.nn.Module) -> None:
 
     plt.tight_layout()
 
+
 def show_transformer(model: Transformer, scale=4) -> None:
     heads = (model.heads + 1) * model.depth
     mlps_size = model.depth * 2 if len(model.blocks) != model.depth else 0
@@ -544,39 +633,59 @@ def show_transformer(model: Transformer, scale=4) -> None:
     for b, block in enumerate(model.blocks):
         if isinstance(block, MultiAttentionHead):
             for h, head in enumerate(block.heads):
-                show_matrix(head.queries, axes[line, 0], f"Layer {head.layer} Head {h} Q")
-                show_matrix(head.keys, axes[line, 1], f"Layer {head.layer} Head {h} K")
-                show_matrix(head.values, axes[line, 2], f"Layer {head.layer} Head {h} V")
+                show_matrix(head.queries, axes[line, 0],
+                            f"Layer {head.layer} Head {h} Q")
+                show_matrix(head.keys, axes[line, 1],
+                            f"Layer {head.layer} Head {h} K")
+                show_matrix(head.values, axes[line, 2],
+                            f"Layer {head.layer} Head {h} V")
                 line += 1
             show_matrix(block.weight, axes[line, 1], f"Layer {b} Weight")
             line += 1
         elif isinstance(block, ResidualMLP):
             for i, layer in enumerate(block.layers):
-                show_matrix(layer.weight, axes[line, i], f"Layer {b} MLP layer {i}")
+                show_matrix(layer.weight, axes[line, i],
+                            f"Layer {b} MLP layer {i}")
                 axes[line + 1, i].stem(layer.bias.detach().numpy())
                 axes[line + 1, i].set_title(f"Layer {b} MLP bias {i}")
             line += 2
     show_matrix(model.unembedding, axes[line, 1], "Unembedding")
 
 
-def show_activations(model: Transformer, input_: TensorType['token']) -> None:
-    assert len(input_.shape) == 2 and input_.shape[0] == 1, "show_activations only works with a single input"
+def get_activations(
+        model: Transformer,
+        prompt: TensorType["batch", "token"]) -> Dict[str, TensorType]:
+    """Return a dictionary of all activations of the model."""
 
-    activations = []
+    activations = {}
+
     def store_activations(value: TensorType, *name: Union[str, int]):
-        activations.append((' '.join(map(str, name)), value))
+        activations[' '.join(map(str, name))] = value
 
     with torch.no_grad():
         with temp_debug((), callback=store_activations):
-            model(input_)
+            model(prompt)
+
+    return activations
+
+
+def show_activations(model: Transformer, input_: TensorType['token']) -> None:
+    assert len(input_.shape) == 2 and input_.shape[
+        0] == 1, "show_activations only works with a single input"
+
+    activations = get_activations(model, input_)
+
+    with torch.no_grad():
 
         param_count = len(activations)
         width = math.ceil(math.sqrt(param_count))
         height = math.ceil(param_count / width)
 
-        fig, axes = plt.subplots(height, width, figsize=(width * 4, height * 4))
+        fig, axes = plt.subplots(height,
+                                 width,
+                                 figsize=(width * 4, height * 4))
 
-        for i, (name, param) in enumerate(activations):
+        for i, (name, param) in enumerate(activations.items()):
             # plt.subplot(height, width, i + 1)
             param.squeeze_(0)
             ax = axes[i // width, i % width]
@@ -587,24 +696,55 @@ def show_activations(model: Transformer, input_: TensorType['token']) -> None:
                 show_matrix(param, ax, name)
 
 
-def show_matrix(x, axis, title: str):
+def show_batch(tensor: TensorType["batch", "token", "dim"],
+               prompts: TensorType["batch", "token", "position"],
+               width: int = None,
+               **kwargs) -> None:
+
+    if width is None:
+        width = math.ceil(math.sqrt(tensor.shape[0]))
+
+    height = math.ceil(tensor.shape[0] / width)
+
+    fig, axs = plt.subplots(
+        height,
+        width,
+        squeeze=False,
+        figsize=(width * tensor.shape[2] / 2, height * tensor.shape[1] / 2),
+        sharex=True,
+        sharey=True,
+    )
+
+    for i, prompt in enumerate(prompts):
+        show_matrix(tensor[i, :, :], axs[i // width, i % width],
+                    " ".join(map(str, prompt.tolist())), **kwargs)
+
+
+def show_matrix(x, axis=None, title: str = "", **kwargs):
+    if axis is None:
+        axis = plt.gca()
+
     x = x.detach().numpy()
-    im = axis.imshow(x)
+    im = axis.imshow(x, **kwargs)
     colors = im.cmap(im.norm(x))
+    max_shown = np.abs(x).max() * 0.01
 
     for i in range(x.shape[0]):
         for j in range(x.shape[1]):
             value = x[i, j].item()
-            if abs(value - int(value)) < 0.01:
+            if abs(value) < max_shown:
+                continue
+            elif abs(value - int(value)) < 0.05:
                 text = str(int(value))
             else:
-                text = f"{value:.1f}"
+                text = f"{value:.2f}"
 
             if text != "0":
                 color = 'white' if colors[i, j, :4].mean() < 0.5 else 'black'
                 axis.text(j, i, text, ha="center", va="center", color=color)
     # plt.colorbar()
-    axis.set_title(title)
+    if title:
+        axis.set_title(title)
 
 
 ##########################
