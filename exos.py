@@ -1,7 +1,7 @@
 import random
 from typing import Dict, List
 from torch import Tensor
-from hand import Exercise, set_debug
+from hand import set_debug
 
 __all__ = ['EXOS', 'set_debug']
 
@@ -177,12 +177,12 @@ def binary_add():
     cut = random.randrange(s.index("=") + 1, len(s))
     return s[:cut], s[cut]
 
-
-EXOS: Dict[str, Exercise] = {
-    e.name: e
-    for e in globals().values()
-    if isinstance(e, Exercise)
-}
+EXOS = {}
+# EXOS: Dict[str, Exercise] = {
+#     e.name: e
+#     for e in globals().values()
+#     if isinstance(e, Exercise)
+# }
 
 if __name__ == '__main__':
     import sys

@@ -129,7 +129,7 @@ class GFX:
     def text(self,
              txt,
              size=DEFAULT_TEXT_SIZE,
-             color="white",
+             color=WHITE,
              abs_position=False,
              **anchor) -> pygame.Rect:
         assert len(anchor) == 1
@@ -141,8 +141,9 @@ class GFX:
         anchor, pos = anchor.popitem()
         setattr(r, anchor, pos)
         if not abs_position:
-            r = self.to_screen(r)
-        self.surf.blit(s, r)
+            self.surf.blit(s, self.to_screen(r))
+        else:
+            self.surf.blit(s, r)
         return r
 
     def texts(self, *texts, color=WHITE, **anchor) -> Rect:
@@ -217,8 +218,11 @@ class GFX:
                           [self.to_screen(p) for p in zip(xs, ys)], 1)
 
         if axis:
-            self.text(f"{mini:.1f}", midright=full_rect.bottomleft)
-            self.text(f"{maxi:.1f}", midright=full_rect.topleft)
+            self.text(f"{mini:.1f}", midright=plot_rect.bottomleft)
+            self.text(f"{maxi:.1f}", midright=plot_rect.topleft)
+            if len(points) > 1:
+                curr = points[-1]
+                self.text(f"{curr:.1f}", midleft=(plot_rect.right, float(ys[-1])))
 
         return full_rect
 

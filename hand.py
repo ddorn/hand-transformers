@@ -25,6 +25,7 @@ patch_typeguard()
 # Reimplementation of GPT #
 # ------------------------- #
 
+
 class CharTokenizer:
 
     def __init__(self, vocab: str, max_len: int):
@@ -123,6 +124,10 @@ class AttentionHead(torch.nn.Module):
         self.keys = torch.nn.Parameter(keys)
         self.queries = torch.nn.Parameter(queries)
         self.values = torch.nn.Parameter(values)
+
+    def qk(self):
+        """Returns the qk matrix."""
+        return self.queries @ self.keys.T
 
 
 class MultiAttentionHead(torch.nn.Module):
@@ -224,11 +229,16 @@ class TransformerBlock(torch.nn.Module):
             x = self.mlp(x)
         return x
 
+
 class Transformer(torch.nn.Module):
 
-    def __init__(self, voc_size: int, embedding_size: int, depth: int,
-                 heads: int, pos_encoder: TensorType['max_prompt_len', 'embedding_size'],
-                 mlp_dims: Optional[Tuple[int, ...]]=None) -> None:
+    def __init__(self,
+                 voc_size: int,
+                 embedding_size: int,
+                 depth: int,
+                 heads: int,
+                 max_prompt_len: int,
+                 mlp_dims: Optional[Tuple[int, ...]] = None) -> None:
         super().__init__()
 
         self.depth = depth
@@ -236,12 +246,14 @@ class Transformer(torch.nn.Module):
         self.mlp_dims = mlp_dims
         self.voc_size = voc_size
         self.embedding = torch.nn.Embedding(voc_size, embedding_size)
-        self.position_encoder = pos_encoder
+        self.position_encoder = torch.nn.Parameter(
+            torch.randn(max_prompt_len, embedding_size))
         self.blocks = torch.nn.Sequential(*[
             TransformerBlock(embedding_size, heads, mlp_dims, layer=i)
             for i in range(depth)
         ])
-        self.unembedding = torch.nn.Parameter(torch.rand(embedding_size, voc_size))
+        self.unembedding = torch.nn.Parameter(
+            torch.rand(embedding_size, voc_size))
 
     def forward(self, x: TensorType['batch', 'token']) -> List[str]:
         debug(x, "input")
@@ -255,9 +267,22 @@ class Transformer(torch.nn.Module):
         unembeded = out @ self.unembedding
         debug(unembeded, "unembeded")
         return unembeded
-        probas = torch.softmax(unembeded, dim=-1)
-        debug(probas, "probas")
-        return probas
+        # probas = torch.softmax(unembeded, dim=-1)
+        # debug(probas, "probas")
+        # return probas
+
+    def loss(self, x: TensorType['batch', 'token'],
+             y: TensorType['batch']) -> TensorType['batch']:
+        logits = self.forward(x)
+        return torch.nn.functional.cross_entropy(logits, y)
+
+    def init_weights(self) -> None:
+        for p in self.parameters():
+            if p.dim() > 1:
+                torch.nn.init.xavier_uniform_(p)
+            else:
+                # not zero
+                torch.nn.init.normal_(p, std=0.01)
 
 
 # ----------------------- #
@@ -265,55 +290,50 @@ class Transformer(torch.nn.Module):
 # ----------------------- #
 
 
-@dataclass
 class Task:
-    """A task is a finite set of prompts and 1-char answers."""
-    prompts: List[str]
-    answers: List[str]
+    char_to_token: Dict[str, int]
+    tokens: List[str]
+    prompt_len: int
 
-    @classmethod
-    def from_texts(cls, texts: List[str]) -> Task:
-        """Create a task from a list of texts.
+    def __init__(self,
+                 tokens: list[str],
+                 prompt_len: int,
+                 pad_token=None) -> None:
+        self.tokens = tokens
+        self.prompt_len = prompt_len
+        self.pad_token = pad_token
+        if pad_token is not None:
+            self.tokens.append(pad_token)
+        self.char_to_token = {char: i for i, char in enumerate(tokens)}
 
-        Args:
-            texts (List[str]): A list of texts, each text is a concatenation of prompts and answers.
+    def generate(self, n: int) -> tuple[list[str], list[str]]:
+        raise NotImplementedError
 
-        Returns:
-            Task: A task with the prompts and answers.
-        """
-        prompts = []
-        answers = []
-        for text in texts:
-            prompts.append(text[:-1])
-            answers.append(text[-1])
-        return cls(prompts, answers)
+    def generate_batch(
+            self, batch_size: int
+    ) -> tuple[TT['batch', 'token', int], TT['batch', int]]:
+        prompts, answers = self.generate(batch_size, False)
 
-    @cached_property
-    def tokens(self) -> List[str]:
-        return list(sorted(set(''.join(self.prompts + self.answers))))
+        if self.pad_token is None and not all(
+                len(prompt) == self.prompt_len for prompt in prompts):
+            raise ValueError(
+                "Some prompts are not of the same length, and no padding token is defined."
+            )
 
-    @cached_property
-    def max_prompt_len(self) -> int:
-        return max(len(prompt) for prompt in self.prompts)
+        # encode prompts and answers
+        return self.encode(prompts, self.prompt_len), self.encode(answers).squeeze(1)
 
-    @cached_property
-    def char_to_token(self) -> Dict[str, int]:
-        return {char: i for i, char in enumerate(self.tokens)}
+    def encode(self, prompts: List[str], pad_to: int = None) -> TT['prompt', 'token', int]:
+        if pad_to is not None and not all(len(prompt) == pad_to for prompt in prompts):
+            assert self.pad_token is not None, "No padding token defined but prompts are not of the same length."
+            prompts = [
+                self.pad_token * (pad_to - len(prompt)) + prompt
+                for prompt in prompts
+            ]
 
-    @cached_property
-    def tokenized_prompts(self) -> TT['prompt', 'token', int]:
-        assert all(
-            len(prompt) == self.max_prompt_len for prompt in self.prompts)
-
-        return self.encode(self.prompts)
-
-    @cached_property
-    def tokenized_answers(self) -> TT['prompt', 'token', int]:
-        return self.encode(self.answers)
-
-    def encode(self, prompts: List[str]) -> TT['prompt', 'token', int]:
         return torch.tensor([[self.char_to_token[char] for char in prompt]
-                             for prompt in prompts])
+                            for prompt in prompts])
+
 
     def decode(self, tokens: TT['prompt', 'token', int]) -> List[str]:
         if tokens.ndim == 1:
@@ -323,7 +343,7 @@ class Task:
             for prompt in tokens
         ]
 
-    def test(self, model: Transformer, verbose: int = 0) -> float:
+    def test(self, model: Transformer, verbose: int = 0, nb_tests: tinn=100) -> float:
         """Test the model on this task.
 
         Args:
@@ -338,21 +358,23 @@ class Task:
             float: The accuracy of the model on this task.
         """
         with torch.no_grad():
-            probas = model(self.tokenized_prompts)
+            prompts, answers = self.generate(nb_tests)
+            xs = self.encode(prompts, self.prompt_len)
+            probas = model(xs)
             predictions = torch.argmax(probas, dim=-1)
             predictions = self.decode(predictions)
 
-            for prompt, answer, prediction in zip(self.prompts, self.answers,
-                                                  predictions):
+            for prompt, answer, prediction in zip(prompts, answers, predictions):
                 if verbose == 2 or (verbose == 1 and answer != prediction):
                     print(f"{prompt} → {answer} ({prediction})")
                 elif verbose == 3:
                     pass
-
+                elif verbose > 3:
+                    raise ValueError("verbose should be in [0, 3].")
 
             return sum(1
-                       for answer, prediction in zip(self.answers, predictions)
-                       if answer == prediction) / len(self.answers)
+                       for answer, prediction in zip(answers, predictions)
+                       if answer == prediction) / len(answers)
 
     def loss(self, model: Transformer) -> float:
         """Compute the loss of the model on this task.
@@ -364,70 +386,65 @@ class Task:
             TensorType['batch']: The loss of the model on this task.
         """
         probas = model(self.tokenized_prompts)
-        return torch.nn.functional.cross_entropy(probas, self.tokenized_answers.squeeze(1)).item()
+        return torch.nn.functional.cross_entropy(
+            probas, self.tokenized_answers.squeeze(1)).item()
 
-    def __str__(self) -> str:
-        s = f"{self.__class__.__name__}({len(self.prompts)} prompts)"
-        if len(self.prompts) <= 10:
-            examples = range(len(self.prompts))
+    def __repr__(self) -> str:
+        s = f"{self.__class__.__name__}"
+        prompts, answers = self.generate(10)
+        if len(prompts) <= 10:
+            examples = range(len(prompts))
         else:
-            examples = random.sample(range(len(self.prompts)), 10)
+            examples = range(10)
 
         for i in examples:
-            s += f"\n  {self.prompts[i]} → {self.answers[i]}"
+            s += f"\n  {prompts[i]} → {answers[i]}"
 
         # Add tokens with their IDs
         s += f"\nTokens: {self.tokens}"
         return s
 
 
-class Exercise:
+class StaticTask(Task):
+    """A task is a finite set of prompts and 1-char answers."""
+    prompts: List[str]
+    answers: List[str]
 
-    def __init__(self, name: str, tokenizer: CharTokenizer,
-                 generator: Callable[[], Tuple[str, str]]) -> None:
-        self.tokenizer = tokenizer
-        self.generator = generator
-        self.description = generator.__doc__
-        self.name = name
+    def __init__(self, texts: list[str]) -> None:
+        """Create a task from pre-defined set of prompts where only the last char is to guess.
 
-    @typechecked
-    def test(self,
-             model: torch.nn.Module,
-             nb_tests: int = 100,
-             verbose: bool = True) -> Tuple[float, float]:
+        Args:
+            texts (List[str]): A list of texts, each text is a concatenation of
+                a prompt and a 1-char answer. Each prompt must have the same
+                length.
+        """
+        assert len(texts) > 0
+        assert all(len(t) == len(texts[0]) for t in texts)
 
-        xs, ys = self.generate(nb_tests)
-        # make each input unique
-        prompts = {x: y for x, y in zip(xs, ys)}
-        xs, ys = map(list, zip(*prompts.items()))
-        nb_tests = len(xs)
+        self.prompts = [text[:-1] for text in texts]
+        self.answers = [text[-1] for text in texts]
+        tokens = list(sorted(set(''.join(texts))))
+        super().__init__(tokens)
 
-        xs_enc = self.tokenizer.encode(xs)
-        ys_enc = self.tokenizer.encode(ys, pad=False)[:, -1]
+    def generate(self, n: int) -> tuple[list[str], list[str]]:
+        if n >= len(self.prompts):
+            return self.prompts, self.answers
+        else:
+            indices = random.sample(range(len(self.prompts)), n)
+            return [self.prompts[i]
+                    for i in indices], [self.answers[i] for i in indices]
 
-        # Count successes and compute loss
-        pred_enc = model(xs_enc)
-        loss = torch.nn.functional.cross_entropy(pred_enc, ys_enc).item()
-        correct = (pred_enc.argmax(dim=-1) == ys_enc).sum().item()
+    @cached_property
+    def max_prompt_len(self) -> int:
+        return max(len(prompt) for prompt in self.prompts)
 
-        # Show first 10 predictions
-        if verbose:
-            pred = self.tokenizer.decode(pred_enc.argmax(dim=-1).unsqueeze(-1))
-            xs_width = max(len(x) for x in xs)
-            for i in range(min(10, nb_tests)):
-                expected = "EXPECTED " + ys[i] if ys[i] != pred[
-                    i] else "        "
-                token_probs = [
-                    f"{char if char.strip() else repr(char)}: {proba:.2f}" for
-                    char, proba in zip(self.voc, pred_enc[i].detach().numpy())
-                ]
-                token_probs = '  '.join(token_probs)
-                print(
-                    f"{xs[i]:>{xs_width}} → {pred[i]} {expected}\t{token_probs}"
-                )
-            print(f"Loss: {loss:.2f}  Accuracy: {correct} / {nb_tests}")
+    @cached_property
+    def tokenized_prompts(self) -> TT['prompt', 'token', int]:
+        return self.encode(self.prompts)
 
-        return correct, loss
+    @cached_property
+    def tokenized_answers(self) -> TT['prompt', 'token', int]:
+        return self.encode(self.answers)
 
 
 # ------------------------------ #
@@ -450,10 +467,10 @@ class Perfs:
         if self.models is not None:
             self.models.append(deepcopy(model))
 
-
-
     def plot_loss(self):
-        plt.plot(self.loss)
+        plt.plot(self.loss[1:])
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
 
     def plot_accuracy(self):
         plt.plot(self.accuracy)
@@ -764,7 +781,6 @@ def cat(*args: Union[torch.TensorType, list]):
         else:
             # print(*[a.shape for a in arg])
             parts.append(torch.cat(arg, dim=1))
-
 
     return torch.cat(parts, dim=0)
 
